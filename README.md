@@ -103,6 +103,9 @@ Only the Xcode command line tools are required (`xcode-select --install`), no Xc
 ./make-dmg.sh     # additionally builds build/JumpBass-Revived-<version>.dmg
 ```
 
+If a code signing certificate named "JumpBass Revived" is in the keychain, `build.sh` signs with it, so macOS
+keeps the audio recording permission across updates; otherwise the app is signed ad hoc.
+
 The icon is drawn by `icon/make_icon.m` and included ready-made as `icon/AppIcon.icns`.
 
 ### Removing the old Twelve South software

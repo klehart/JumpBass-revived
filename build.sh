@@ -13,5 +13,9 @@ rm build/x86_64 build/arm64
 cp Info.plist "$APP/Contents/Info.plist"
 mkdir -p "$APP/Contents/Resources"
 cp icon/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
-codesign --force --sign - "$APP"
+# Mit dem Zertifikat "JumpBass Revived" bleibt die Signatur über Versionen gleich, und macOS behält die
+# Freigabe für die Systemaudioaufnahme. Ohne das Zertifikat (fremde Builds) ad-hoc signieren.
+IDENTITY=$(security find-identity -p codesigning 2>/dev/null | awk '/"JumpBass Revived"/ { print $2; exit }')
+codesign --force --sign "${IDENTITY:--}" "$APP"
+[ -n "$IDENTITY" ] && echo "Signiert mit Zertifikat JumpBass Revived" || echo "Ad-hoc signiert (Zertifikat JumpBass Revived nicht gefunden)"
 echo "Fertig: $APP"
