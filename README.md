@@ -118,8 +118,8 @@ sudo ./alte-software-entfernen.sh
 | Übergangsfrequenz (crossover) | The BassJump plays up to this frequency. Default 150 Hz; above ~250 Hz it becomes audible as a separate source. |
 | Bass-Timing | 0 = automatic, based on device latencies. Positive delays the bass, negative delays the speakers. |
 | Tiefbass-Schutz (sub-bass filter) | Removes frequencies below 30–70 Hz that the small driver cannot reproduce. |
-| Maximalpegel (maximum level) | Ceiling of the limiter. Lower it if the BassJump distorts at full volume. |
-| Ruhemodus (standby) | Releases the BassJump during silence. |
+| Maximalpegel (maximum level) | Ceiling of the limiter, default -12 dB. Measured: the BassJump's amplifier clips from about -10 dBFS, so higher levels are not offered. |
+| Ruhemodus (standby) | Releases the BassJump during silence (saves CPU, lets the BassJump enter its own standby; no audible hiss difference was measured). |
 | BassJump spielt mit bei (play with) | Output devices for which the bass is added. |
 
 ## Uninstalling

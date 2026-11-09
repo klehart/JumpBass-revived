@@ -404,8 +404,12 @@ static AudioObjectID FallbackMicrophone(AudioObjectID bassJump) {
 // Monitore ohne macOS-Lautstärke (DisplayPort/HDMI) regelt z.B. MonitorControl per DDC direkt im Gerät;
 // macOS erfährt davon nichts. MonitorControl merkt sich den Wert unter "value98(<Name><Hersteller><Modell>@<Display-ID>)"
 // (98 = DDC-Lautstärke 0…1, 141 = DDC-Stummschaltung, 1 = stumm). Den lesen wir mit, damit der Bass mitgeht.
+// Gemessen am LG UltraFine: Ab 17 % steigt der Pegel ziemlich genau um 3 dB je 10 %, darunter fällt er steil ab
+// (bei 7 % war ein Testton schon nicht mehr messbar). Unterhalb von 17 % daher kubisch auf null.
 static float MonitorVolumeCurve(float v) {
-    return v * v; // DDC-Stufen sind grob lautheitslinear, quadratisch kommt dem Gehör am nächsten
+    if (v <= 0) return 0;
+    float low = fminf(1.0f, v / 0.17f);
+    return powf(10.0f, 1.5f * (v - 1.0f)) * low * low * low;
 }
 
 static NSString *ScreenName(NSScreen *screen) {
@@ -550,10 +554,13 @@ static void SetHardwareSilent(AudioObjectID dev, BOOL silent);
         @"levelDB": @0.0,
         @"bassOffsetMs": @0.0,
         @"idleStandby": @YES,
-        @"subsonicHz": @40.0,
-        @"maxLevelDB": @-3.0,
+        @"subsonicHz": @50.0,
+        @"maxLevelDB": @-12.0,
         @"guardDefaults": @YES,
     }];
+    // Frühere Stufen (-1 … -9 dB) lagen über der Übersteuerungsgrenze des BassJump
+    if ([self.defaults objectForKey:@"maxLevelDB"] && [self.defaults doubleForKey:@"maxLevelDB"] > kHardwareCeilingDB)
+        [self.defaults removeObjectForKey:@"maxLevelDB"];
 
     self.statusItem = [[NSStatusBar systemStatusBar] statusItemWithLength:NSVariableStatusItemLength];
     self.statusItem.button.image = StatusIcon();
@@ -642,7 +649,8 @@ static void SetHardwareSilent(AudioObjectID dev, BOOL silent);
     }
 }
 
-// Ruhemodus: Nach längerer Stille den BassJump freigeben, damit sein Verstärker nicht rauscht.
+// Ruhemodus: Nach längerer Stille den BassJump freigeben. Hörbares Rauschen hat er im Betrieb nicht (gemessen),
+// es geht um Rechenzeit und darum, dass der BassJump selbst in seinen Standby gehen kann.
 - (void)checkIdle {
     if (!_tap) return;
     CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
@@ -1007,7 +1015,7 @@ static SInt32 OutputLatency(AudioObjectID dev) {
 }
 
 - (void)updateLimit {
-    atomic_store(&_engine.limitLevel, MIN(0.89f, powf(10.0f, [self.defaults floatForKey:@"maxLevelDB"] / 20.0f)));
+    atomic_store(&_engine.limitLevel, powf(10.0f, fmin([self.defaults doubleForKey:@"maxLevelDB"], kHardwareCeilingDB) / 20.0f));
 }
 
 - (void)updateGain {
@@ -1227,9 +1235,8 @@ static SInt32 OutputLatency(AudioObjectID dev) {
     [menu addItem:[NSMenuItem separatorItem]];
 
     NSMutableArray *maxItems = [NSMutableArray array];
-    for (NSNumber *db in @[@-1, @-3, @-6, @-9, @-12]) {
-        NSString *title = db.intValue == -1 ? @"-1 dB (ungebremst)" : [NSString stringWithFormat:@"%@ dB", db];
-        [maxItems addObject:[self item:title action:@selector(chooseMaxLevel:) rep:db checked:fabs([d doubleForKey:@"maxLevelDB"] - db.doubleValue) < 0.5]];
+    for (NSNumber *db in MaxLevelChoices()) {
+        [maxItems addObject:[self item:MaxLevelTitle(db) action:@selector(chooseMaxLevel:) rep:db checked:fabs([d doubleForKey:@"maxLevelDB"] - db.doubleValue) < 0.5]];
     }
     [menu addItem:[self submenu:@"Maximalpegel (gegen Krachen)" items:maxItems]];
     [menu addItem:[NSMenuItem separatorItem]];
@@ -1248,10 +1255,10 @@ static NSArray<NSString *> *PresetKeys(void) { return @[@"crossover", @"levelDB"
     double (^orig)(double) = ^double(double v) { return 20.0 * log10(v / 0.6); };
     NSArray *raw = @[ @[@"Standard", @150, @(orig(0.6))], @[@"Klassik", @175, @(orig(0.5))], @[@"Pop", @200, @(orig(0.75))],
                       @[@"R&B", @150, @(orig(1.0))], @[@"Rock", @175, @(orig(0.8))],
-                      @[@"Jazz", @120, @-1.0], @[@"Akustik", @100, @-3.0], @[@"Hip-Hop", @120, @3.0],
-                      @[@"Elektronisch", @100, @3.0], @[@"Metal", @200, @1.0], @[@"Film & Serien", @120, @2.0],
-                      @[@"Spiele", @150, @2.0], @[@"Sprache & Podcast", @80, @-6.0], @[@"Nachtmodus", @150, @-9.0],
-                      @[@"Volle Fülle", @250, @2.0], @[@"Maximaler Bass", @200, @5.0] ];
+                      @[@"Jazz", @120, @-1.0], @[@"Akustik", @100, @-3.0], @[@"Hip-Hop", @120, @2.0],
+                      @[@"Elektronisch", @100, @2.0], @[@"Metal", @175, @0.0], @[@"Film & Serien", @120, @1.0],
+                      @[@"Spiele", @150, @1.0], @[@"Sprache & Podcast", @80, @-6.0], @[@"Nachtmodus", @150, @-9.0],
+                      @[@"Volle Fülle", @200, @1.0], @[@"Maximaler Bass", @175, @3.0] ];
     NSMutableArray *r = [NSMutableArray array];
     for (NSArray *p in raw) [r addObject:@{ @"name": p[0], @"values": @{ @"crossover": p[1], @"levelDB": p[2] } }];
     for (NSDictionary *p in [self.defaults arrayForKey:@"userPresets"]) {

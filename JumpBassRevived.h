@@ -28,6 +28,16 @@ static inline NSString *LevelText(double level, BOOL db) {
     return pct < 0.5 ? @"< 1 %" : [NSString stringWithFormat:@"%.0f %%", pct]; // leise, aber nicht aus
 }
 
+// Maximalpegel-Stufen. Gemessen: Der Verstärker im BassJump übersteuert ab etwa -10 dBFS am Eingang
+// (darüber wird er nicht lauter, nur verzerrter), daher liegt die höchste Stufe dort.
+static const double kHardwareCeilingDB = -10;
+static inline NSArray<NSNumber *> *MaxLevelChoices(void) { return @[@-10, @-12, @-15, @-18]; }
+static inline NSString *MaxLevelTitle(NSNumber *db) {
+    if (db.intValue == -10) return @"-10 dB (am Limit)";
+    if (db.intValue == -12) return @"-12 dB (empfohlen)";
+    return [NSString stringWithFormat:@"%@ dB", db];
+}
+
 NSArray<NSNumber *> *OutputDevices(void);
 NSString *DeviceUID(AudioObjectID dev);
 NSString *DeviceName(AudioObjectID dev);

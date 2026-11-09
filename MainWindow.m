@@ -379,7 +379,8 @@ static double ScalePos(double vu) {
     [self heading:@"Tiefbass-Schutz" frame:NSMakeRect(lx, y + 3, 140, 18) in:_soundPane info:
         @"Filtert Frequenzen unterhalb des gewählten Werts heraus.\n\n"
          "So tiefe Töne kann der kleine Lautsprecher kaum hörbar wiedergeben, sie brauchen aber viel Membranhub "
-         "und Verstärkerleistung – bei lauter Musik führt das zum Krachen. 40–50 Hz ist ein guter Kompromiss."];
+         "und Verstärkerleistung – bei lauter Musik führt das zum Krachen. Gemessen ist 40 Hz am BassJump über 10 dB leiser "
+         "als 60 Hz, übersteuert aber genauso früh. 50 Hz ist daher die Voreinstellung."];
     _subsonic = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(cx - 3, y - 1, cw + 6, 26) pullsDown:NO];
     for (NSNumber *hz in @[@0, @30, @40, @50, @60, @70]) {
         [_subsonic addItemWithTitle:hz.intValue ? [NSString stringWithFormat:@"unter %@ Hz ausblenden", hz] : @"Aus"];
@@ -393,11 +394,12 @@ static double ScalePos(double vu) {
     [self heading:@"Maximalpegel" frame:NSMakeRect(lx, y + 3, 140, 18) in:_soundPane info:
         @"Obergrenze für das Bass-Signal. Lautere Stellen regelt ein Begrenzer weich ab, statt sie verzerren zu lassen – "
          "dann leuchtet LIMIT im Messgerät.\n\n"
-         "Kracht der BassJump bei lauten Stellen trotzdem, diesen Wert senken. Leuchtet LIMIT ständig, "
+         "Gemessen übersteuert der BassJump ab etwa -10 dB: Darüber wird er nicht mehr lauter, sondern kracht nur. "
+         "-12 dB lässt etwas Reserve. Kracht es trotzdem, weiter senken. Leuchtet LIMIT ständig, "
          "ist die BassJump-Lautstärke zu hoch eingestellt."];
     _maxLevel = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(cx - 3, y - 1, cw + 6, 26) pullsDown:NO];
-    for (NSNumber *db in @[@-1, @-3, @-6, @-9, @-12]) {
-        [_maxLevel addItemWithTitle:db.intValue == -1 ? @"-1 dB (ungebremst)" : [NSString stringWithFormat:@"%@ dB", db]];
+    for (NSNumber *db in MaxLevelChoices()) {
+        [_maxLevel addItemWithTitle:MaxLevelTitle(db)];
         _maxLevel.lastItem.representedObject = db;
     }
     _maxLevel.target = self;
@@ -420,8 +422,10 @@ static double ScalePos(double vu) {
     [_settingsPane addSubview:_login];
     [_settingsPane addSubview:_guard];
     [self addInfo:@"Nach 10 Sekunden Stille gibt JumpBass den BassJump frei und schaltet ihn stumm. Die Lautsprecher spielen dann "
-                   "direkt, ohne Umweg über JumpBass, und der Mac rechnet nichts.\n\n"
-                   "Sobald wieder Ton kommt, schaltet sich der Bass automatisch zu – die ersten Sekundenbruchteile noch ohne Bass." after:_idle];
+                   "direkt, ohne Umweg über JumpBass, und der Mac rechnet nichts. Der BassJump kann so selbst in seinen Standby gehen.\n\n"
+                   "Am Klang ändert das nichts: Ein Rauschen des BassJump war in der Messung auch ohne Ruhemodus nicht hörbar. "
+                   "Sobald wieder Ton kommt, schaltet sich der Bass automatisch zu – die ersten Sekundenbruchteile noch ohne Bass. "
+                   "Stört das, den Ruhemodus ausschalten." after:_idle];
     [self addInfo:@"Startet JumpBass automatisch, sobald du dich am Mac anmeldest." after:_login];
     [self addInfo:@"Der BassJump meldet sich bei macOS zusätzlich als Mikrofon und Lautsprecher („BassJump Core“). "
                    "Entfernen lässt sich das ohne Treiber nicht.\n\n"
