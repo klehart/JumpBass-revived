@@ -147,7 +147,11 @@ static double ScalePos(double vu) {
     id _power;                  // NSSwitch ab 10.15, sonst Checkbox
     VUMeterView *_meter;
     NSSegmentedControl *_tabs;
-    NSView *_soundPane, *_settingsPane;
+    NSView *_soundPane, *_settingsPane, *_calPane;
+    Calibrator *_calibrator;
+    NSButton *_calTiming, *_calMax, *_calVolume, *_calStart, *_calReset;
+    NSProgressIndicator *_calProgress;
+    NSTextField *_calIntro, *_calStatus, *_calResult;
     NSPopUpButton *_presets, *_device, *_levelStyle, *_subsonic, *_maxLevel;
     NSButton *_savePreset, *_deletePreset;
     NSArray *_presetList;
@@ -308,7 +312,7 @@ static double ScalePos(double vu) {
     _meter = [[VUMeterView alloc] initWithFrame:NSMakeRect(24, 92, kWidth - 48, 170)];
     [root addSubview:_meter];
 
-    _tabs = [NSSegmentedControl segmentedControlWithLabels:@[L(@"Klang"), L(@"Einstellungen")] trackingMode:NSSegmentSwitchTrackingSelectOne target:self action:@selector(switchTab:)];
+    _tabs = [NSSegmentedControl segmentedControlWithLabels:@[L(@"Klang"), L(@"Einstellungen"), L(@"Kalibrieren")] trackingMode:NSSegmentSwitchTrackingSelectOne target:self action:@selector(switchTab:)];
     // BassJump-Lautstärke, wie im Original direkt unter der Anzeige
     NSImageView *quiet = [self symbol:@"speaker.fill" fallback:@"–" frame:NSMakeRect(24, 276, 22, 22)];
     NSImageView *loud = [self symbol:@"speaker.wave.3.fill" fallback:@"+" frame:NSMakeRect(kWidth - 24 - 86 - 30, 276, 26, 22)];
@@ -323,18 +327,21 @@ static double ScalePos(double vu) {
                    "auch deren Lautstärke. Hohe Werte bringen den Bass schnell an den Maximalpegel; dann leuchtet LIMIT "
                    "im Messgerät und laute Stellen werden abgeregelt.")];
 
-    _tabs.frame = NSMakeRect((kWidth - 260) / 2, 316, 260, 24);
+    _tabs.frame = NSMakeRect((kWidth - 360) / 2, 316, 360, 24);
     _tabs.selectedSegment = 0;
     [root addSubview:_tabs];
 
     NSRect paneFrame = NSMakeRect(0, 354, kWidth, kHeight - 354);
     _soundPane = [[FlippedView alloc] initWithFrame:paneFrame];
     _settingsPane = [[FlippedView alloc] initWithFrame:paneFrame];
-    _settingsPane.hidden = YES;
+    _calPane = [[FlippedView alloc] initWithFrame:paneFrame];
+    _settingsPane.hidden = _calPane.hidden = YES;
     [root addSubview:_soundPane];
     [root addSubview:_settingsPane];
+    [root addSubview:_calPane];
     [self buildSoundPane];
     [self buildSettingsPane];
+    [self buildCalibrationPane];
 
     [_window center];
 }
@@ -465,6 +472,118 @@ static double ScalePos(double vu) {
     [_settingsPane addSubview:uninstall];
 }
 
+- (void)buildCalibrationPane {
+    CGFloat x = 24, w = kWidth - 48;
+    _calIntro = [NSTextField wrappingLabelWithString:@""];
+    _calIntro.font = [NSFont systemFontOfSize:12];
+    _calIntro.textColor = NSColor.secondaryLabelColor;
+    _calIntro.frame = NSMakeRect(x, 0, w, 64);
+    [_calPane addSubview:_calIntro];
+
+    // Nebeneinander, jeweils mit Platz für das (i)
+    CGFloat cx = x;
+    _calTiming = [self checkbox:L(@"Bass-Timing") frame:NSMakeRect(cx, 74, 0, 22) action:nil];
+    cx += _calTiming.intrinsicContentSize.width + 28;
+    _calMax = [self checkbox:L(@"Maximalpegel") frame:NSMakeRect(cx, 74, 0, 22) action:nil];
+    cx += _calMax.intrinsicContentSize.width + 28;
+    _calVolume = [self checkbox:L(@"Lautstärkekurve") frame:NSMakeRect(cx, 74, 0, 22) action:nil];
+    for (NSButton *b in @[_calTiming, _calMax, _calVolume]) [b setFrameSize:NSMakeSize(b.intrinsicContentSize.width, 22)];
+    _calTiming.state = _calMax.state = NSControlStateValueOn;
+    [_calPane addSubview:_calTiming];
+    [_calPane addSubview:_calMax];
+    [_calPane addSubview:_calVolume];
+    [self addInfo:L(@"Misst die Verzögerung zwischen Lautsprechern und BassJump und stellt das Bass-Timing so ein, dass beide gleichzeitig ankommen. Gilt für die aktuelle Ausgabe.") after:_calTiming];
+    [self addInfo:L(@"Spielt Tieftöne in steigender Lautstärke auf dem BassJump, bis er hörbar übersteuert, und setzt den Maximalpegel knapp darunter. Dabei wird es kurz laut. Gilt für alle Ausgaben.") after:_calMax];
+    [self addInfo:L(@"Nur bei Monitoren, deren Lautstärke MonitorControl regelt: Verstellt die Lautstärke kurz über die Lautstärketasten und misst, wie stark der Monitor lauter wird, damit der Bass genau mitgeht. Braucht die Freigabe „Bedienungshilfen“.") after:_calVolume];
+
+    _calStart = [NSButton buttonWithTitle:L(@"Kalibrierung starten") target:self action:@selector(startCalibration:)];
+    _calStart.frame = NSMakeRect(x - 6, 104, 190, 30);
+    [_calPane addSubview:_calStart];
+    _calProgress = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(x + 196, 110, w - 196, 20)];
+    _calProgress.indeterminate = NO;
+    _calProgress.minValue = 0;
+    _calProgress.maxValue = 1;
+    _calProgress.hidden = YES;
+    [_calPane addSubview:_calProgress];
+    _calStatus = [self label:@"" size:12 weight:NSFontWeightRegular frame:NSMakeRect(x, 140, w, 34)];
+    _calStatus.lineBreakMode = NSLineBreakByWordWrapping;
+    _calStatus.maximumNumberOfLines = 2;
+    [_calPane addSubview:_calStatus];
+
+    _calResult = [NSTextField wrappingLabelWithString:@""];
+    _calResult.font = [NSFont systemFontOfSize:12];
+    _calResult.frame = NSMakeRect(x, 178, w - 130, 50);
+    [_calPane addSubview:_calResult];
+    _calReset = [NSButton buttonWithTitle:L(@"Zurücksetzen") target:self action:@selector(resetCalibration:)];
+    _calReset.frame = NSMakeRect(kWidth - 24 - 120, 182, 126, 30);
+    [_calPane addSubview:_calReset];
+}
+
+- (void)refreshCalibration {
+    NSString *output = [_app currentOutputName] ?: @"–";
+    _calIntro.stringValue = [NSString stringWithFormat:L(@"Misst mit dem Mikrofon des Macs, wie der BassJump mit „%@“ zusammenspielt, und stellt die Werte passend ein. Dauert etwa eine halbe Minute, kurz wird es laut. Vorher: Raum still, Mac und BassJump wie beim Hören aufstellen, normale Lautstärke."), output];
+    BOOL monitor = [_app monitorControlVolume] >= 0;
+    BOOL running = _calibrator.running;
+    if (monitor != (_calVolume.tag == 1)) {   // nur beim Wechsel der Ausgabe vorbelegen, nicht die Wahl überschreiben
+        _calVolume.tag = monitor;
+        _calVolume.state = monitor ? NSControlStateValueOn : NSControlStateValueOff;
+    }
+    _calVolume.enabled = monitor && !running;
+    _calTiming.enabled = _calMax.enabled = !running;
+    _calStart.title = running ? L(@"Abbrechen") : L(@"Kalibrierung starten");
+    _calProgress.hidden = !running;
+
+    NSDictionary *cal = [_app calibrationForCurrentOutput];
+    _calReset.hidden = cal == nil || running;
+    if (!cal) {
+        _calResult.stringValue = [NSString stringWithFormat:L(@"„%@“ ist noch nicht kalibriert."), output];
+        return;
+    }
+    NSDateFormatter *f = [[NSDateFormatter alloc] init];
+    f.dateStyle = NSDateFormatterMediumStyle;
+    f.timeStyle = NSDateFormatterShortStyle;
+    NSMutableArray *parts = [NSMutableArray array];
+    if (cal[@"offsetMs"]) [parts addObject:[NSString stringWithFormat:L(@"Bass-Timing %+.0f ms"), [cal[@"offsetMs"] doubleValue]]];
+    if (cal[@"maxLevelDB"]) {
+        [parts addObject:cal[@"clipDB"] ? [NSString stringWithFormat:L(@"Maximalpegel %.0f dB (übersteuert ab %.0f dB)"), [cal[@"maxLevelDB"] doubleValue], [cal[@"clipDB"] doubleValue]]
+                                        : [NSString stringWithFormat:L(@"Maximalpegel %.0f dB (keine Übersteuerung gefunden)"), [cal[@"maxLevelDB"] doubleValue]]];
+    }
+    if (cal[@"volumeSlope"]) [parts addObject:[NSString stringWithFormat:L(@"Lautstärkekurve %.1f dB je 10 %%"), [cal[@"volumeSlope"] doubleValue] / 10]];
+    _calResult.stringValue = [NSString stringWithFormat:L(@"Zuletzt kalibriert am %@:\n%@"), [f stringFromDate:cal[@"date"]], [parts componentsJoinedByString:@" · "]];
+}
+
+- (void)startCalibration:(id)sender {
+    if (_calibrator.running) {
+        [_calibrator cancel];
+        _calStatus.stringValue = L(@"Wird abgebrochen …");
+        return;
+    }
+    BOOL volume = _calVolume.enabled && _calVolume.state == NSControlStateValueOn;
+    if (volume && !AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)@{ (__bridge NSString *)kAXTrustedCheckOptionPrompt: @YES })) {
+        _calStatus.stringValue = L(@"Für die Lautstärkekurve braucht JumpBass die Freigabe „Bedienungshilfen“. Erteile sie und starte die Kalibrierung erneut.");
+        return;
+    }
+    if (!_calibrator) _calibrator = [[Calibrator alloc] initWithApp:_app];
+    _calProgress.doubleValue = 0;
+    _calStatus.stringValue = L(@"Starte …");
+    [_calibrator runTiming:_calTiming.state == NSControlStateValueOn maxLevel:_calMax.state == NSControlStateValueOn volume:volume
+                  progress:^(NSString *text, double fraction) {
+        self->_calStatus.stringValue = text;
+        self->_calProgress.doubleValue = fraction;
+    } completion:^(NSDictionary *result, NSString *error) {
+        if (result.count) [self->_app applyCalibration:result];
+        self->_calStatus.stringValue = error ?: result.count ? L(@"Fertig – die gemessenen Werte sind übernommen.") : result ? @"" : L(@"Abgebrochen.");
+        [self refresh];
+    }];
+    [self refreshCalibration];
+}
+
+- (void)resetCalibration:(id)sender {
+    [_app resetCalibration];
+    _calStatus.stringValue = L(@"Auf Standardwerte zurückgesetzt.");
+    [self refresh];
+}
+
 #pragma mark Anzeigen und Aktualisieren
 
 - (void)show {
@@ -549,6 +668,7 @@ static double ScalePos(double vu) {
     if (update) _update.title = [NSString stringWithFormat:L(@"Version %@ verfügbar"), update];
 
     [self refreshDevices];
+    [self refreshCalibration];
 }
 
 - (void)updateValueLabels {
@@ -607,6 +727,7 @@ static double ScalePos(double vu) {
 - (void)switchTab:(NSSegmentedControl *)sender {
     _soundPane.hidden = sender.selectedSegment != 0;
     _settingsPane.hidden = sender.selectedSegment != 1;
+    _calPane.hidden = sender.selectedSegment != 2;
 }
 
 - (void)choosePreset:(NSPopUpButton *)sender {

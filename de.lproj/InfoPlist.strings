@@ -1,2 +1,2 @@
 "NSAudioCaptureUsageDescription" = "JumpBass Revived liest den Systemton, um die tiefen Frequenzen an den BassJump-Subwoofer zu senden.";
-"NSMicrophoneUsageDescription" = "JumpBass Revived liest das Loopback-Gerät, um die tiefen Frequenzen an den BassJump-Subwoofer zu senden.";
+"NSMicrophoneUsageDescription" = "JumpBass Revived nutzt das Mikrofon nur während einer Kalibrierung. Unter macOS vor 14.2 liest es außerdem das Loopback-Gerät (z. B. BlackHole).";

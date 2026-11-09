@@ -85,6 +85,27 @@ BOOL LooksLikeBassJump(AudioObjectID dev);
 - (BOOL)launchAtLogin;
 - (void)setLaunchAtLogin:(BOOL)on;
 - (void)showWindow:(id)sender;
+
+// Kalibrierung
+- (NSString *)currentOutputName;
+- (float)monitorControlVolume;          // 0…1 bei Monitoren, die MonitorControl regelt, sonst -1
+- (NSDictionary *)calibrationForCurrentOutput;  // date, offsetMs, timingSpreadMs, clipDB, maxLevelDB, volumeSlope
+- (void)applyCalibration:(NSDictionary *)result;
+- (void)resetCalibration;
+- (void)setCalibrating:(BOOL)on;
+- (BOOL)playTestSpeaker:(const float *)speaker bass:(const float *)bass frames:(UInt32)frames raw:(BOOL)raw;
+- (BOOL)testPlaying;
+- (double)outputSampleRate;
+- (AudioObjectID)measurementMicrophone;
+@end
+
+@interface Calibrator : NSObject
+@property (readonly) BOOL running;
+- (instancetype)initWithApp:(AppDelegate *)app;
+- (void)runTiming:(BOOL)timing maxLevel:(BOOL)maxLevel volume:(BOOL)volume
+         progress:(void (^)(NSString *text, double fraction))progress
+       completion:(void (^)(NSDictionary *result, NSString *error))completion;  // error nil und result nil = abgebrochen
+- (void)cancel;
 @end
 
 @interface MainWindowController : NSObject <NSWindowDelegate>

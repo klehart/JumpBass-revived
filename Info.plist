@@ -32,6 +32,6 @@
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>JumpBass Revived liest das Loopback-Gerät, um die tiefen Frequenzen an den BassJump-Subwoofer zu senden.</string>
+	<string>JumpBass Revived nutzt das Mikrofon nur während einer Kalibrierung. Unter macOS vor 14.2 liest es außerdem das Loopback-Gerät (z. B. BlackHole).</string>
 </dict>
 </plist>

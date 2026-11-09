@@ -86,6 +86,13 @@ typedef struct {
     float bassRing[kRingSize];
     float passRing[kRingSize * 2];
 
+    // Kalibrierung: Testsignale statt Systemton. Der Main-Thread setzt Zeiger und testPos, zuletzt testFrames;
+    // der IOProc spielt sie einmal ab und setzt testFrames danach auf 0.
+    const float *testSpeaker, *testBass;
+    UInt32 testPos;
+    int testRaw;                // 1 = Bass ohne Filter, Pegel und Begrenzer (Messung der Übersteuerung)
+    _Atomic UInt32 testFrames;
+
     // Puffer-Layout des Aggregate-Devices
     UInt32 inputBuffer;
     UInt32 passFirst, passCount; // Durchleitung des vollen Signals an die Lautsprecher
@@ -179,16 +186,25 @@ static OSStatus BassIOProc(AudioObjectID device, const AudioTimeStamp *now,
     UInt32 passDelay = (UInt32)MIN(MAX(atomic_load(&e->passDelay), 0), kRingSize - 1);
     UInt32 bassEnd = MIN(e->bassFirst + e->bassCount, outData->mNumberBuffers);
     UInt32 passEnd = MIN(e->passFirst + e->passCount, outData->mNumberBuffers);
+    UInt32 testFrames = atomic_load_explicit(&e->testFrames, memory_order_acquire);
 
     for (UInt32 i = 0; i < frames; i++) {
         float l = src[i * inCh];
         float r = inCh > 1 ? src[i * inCh + 1] : l;
         inPeak = fmaxf(inPeak, fmaxf(fabsf(l), fabsf(r)));
-        double y = BiquadProcess(&e->coefs, &e->stage1, 0.5 * ((double)l + r));
+        double mono = 0.5 * ((double)l + r);
+        float testBass = 0.0f;
+        if (testFrames) {
+            BOOL playing = e->testPos < testFrames;
+            l = r = playing && e->testSpeaker ? e->testSpeaker[e->testPos] : 0.0f;
+            mono = testBass = playing && e->testBass ? e->testBass[e->testPos] : 0.0f;
+            e->testPos++;
+        }
+        double y = BiquadProcess(&e->coefs, &e->stage1, mono);
         y = BiquadProcess(&e->coefs, &e->stage2, y);
         if (e->hpOn) y = BiquadProcess(&e->hpCoefs, &e->hpStage, y);
         gain += (target - gain) * 0.0005f;
-        float v = (float)(y * gain);
+        float v = (float)(y * (testFrames ? 1.0f : gain));   // Testsignale mit festem Pegel
 
         // Hüllkurve hält den Spitzenwert länger als eine Bass-Schwingung und klingt erst danach ab.
         float a = fabsf(v);
@@ -203,6 +219,7 @@ static OSStatus BassIOProc(AudioObjectID device, const AudioTimeStamp *now,
         v = e->laRing[(la - lookahead) & (kLookaheadRing - 1)] * e->limGain;
         if (v > limit) v = limit;                 // Reste der Annäherung (<1 %) sicher abfangen
         else if (v < -limit) v = -limit;
+        if (testFrames && e->testRaw) v = fmaxf(-1.0f, fminf(1.0f, testBass));
         if (fabsf(v) > peak) peak = fabsf(v);
 
         UInt32 w = e->writePos++ & (kRingSize - 1);
@@ -228,6 +245,7 @@ static OSStatus BassIOProc(AudioObjectID device, const AudioTimeStamp *now,
         }
     }
     e->currentGain = gain;
+    if (testFrames && e->testPos >= testFrames) atomic_store_explicit(&e->testFrames, 0, memory_order_release);
     BiquadFlush(&e->stage1);
     BiquadFlush(&e->stage2);
     BiquadFlush(&e->hpStage);
@@ -408,8 +426,17 @@ static AudioObjectID FallbackMicrophone(AudioObjectID bassJump) {
 // macOS erfährt davon nichts. MonitorControl merkt sich den Wert unter "value98(<Name><Hersteller><Modell>@<Display-ID>)"
 // (98 = DDC-Lautstärke 0…1, 141 = DDC-Stummschaltung, 2 = stumm, 1 = an). Den lesen wir mit, damit der Bass mitgeht.
 // Gemessen am LG UltraFine: Der Pegel steigt ziemlich genau um 3 dB je 10 % (in dB, 0 dB = 100 %).
-static float MonitorVolumeDB(float v) {
-    return v < 0.005f ? -INFINITY : 30.0f * (v - 1.0f);
+// Eine Kalibrierung ersetzt die Steigung durch den gemessenen Wert des jeweiligen Monitors.
+static const float kMonitorSlopeDB = 30.0f;
+static float MonitorVolumeDB(float v, float slope) {
+    return v < 0.005f ? -INFINITY : slope * (v - 1.0f);
+}
+
+static float CalibratedMonitorSlope(AudioObjectID dev) {
+    NSString *uid = DeviceUID(dev);
+    NSDictionary *cal = uid ? [[NSUserDefaults standardUserDefaults] dictionaryForKey:@"calibrations"][uid] : nil;
+    NSNumber *slope = [cal isKindOfClass:[NSDictionary class]] ? cal[@"volumeSlope"] : nil;
+    return [slope isKindOfClass:[NSNumber class]] && slope.floatValue > 5 ? slope.floatValue : kMonitorSlopeDB;
 }
 
 static NSString *ScreenName(NSScreen *screen) {
@@ -417,7 +444,16 @@ static NSString *ScreenName(NSScreen *screen) {
     return nil;
 }
 
+static BOOL MonitorControlValue(AudioObjectID dev, float *volume, BOOL *muted);
+
 static BOOL MonitorControlDB(AudioObjectID dev, float *db) {
+    float v; BOOL muted;
+    if (!MonitorControlValue(dev, &v, &muted)) return NO;
+    *db = muted ? -INFINITY : MonitorVolumeDB(v, CalibratedMonitorSlope(dev));
+    return YES;
+}
+
+static BOOL MonitorControlValue(AudioObjectID dev, float *volume, BOOL *mutedOut) {
     NSString *name = DeviceName(dev);
     for (NSScreen *screen in NSScreen.screens) {
         if (![ScreenName(screen) isEqualToString:name]) continue;
@@ -426,12 +462,11 @@ static BOOL MonitorControlDB(AudioObjectID dev, float *db) {
         NSString *prefsID = [NSString stringWithFormat:@"(%@%u%u@%u)", compact, CGDisplayVendorNumber(d), CGDisplayModelNumber(d), d];
         CFStringRef app = CFSTR("app.monitorcontrol.MonitorControl");
         CFPreferencesAppSynchronize(app);
-        id volume = CFBridgingRelease(CFPreferencesCopyAppValue((__bridge CFStringRef)[@"value98" stringByAppendingString:prefsID], app));
+        id stored = CFBridgingRelease(CFPreferencesCopyAppValue((__bridge CFStringRef)[@"value98" stringByAppendingString:prefsID], app));
         id mute = CFBridgingRelease(CFPreferencesCopyAppValue((__bridge CFStringRef)[@"value141" stringByAppendingString:prefsID], app));
-        if (![volume respondsToSelector:@selector(floatValue)]) return NO;
-        float v = MAX(0.0f, MIN(1.0f, [volume floatValue]));
-        BOOL muted = [mute respondsToSelector:@selector(intValue)] && [mute intValue] == 2;
-        *db = muted ? -INFINITY : MonitorVolumeDB(v);
+        if (![stored respondsToSelector:@selector(floatValue)]) return NO;
+        *volume = MAX(0.0f, MIN(1.0f, [stored floatValue]));
+        *mutedOut = [mute respondsToSelector:@selector(intValue)] && [mute intValue] == 2;
         return YES;
     }
     return NO;
@@ -467,6 +502,14 @@ static float DeviceVolumeDB(AudioObjectID dev) {
     float monitor;
     if (MonitorControlDB(dev, &monitor)) return monitor;
     return 0.0f;
+}
+
+static BOOL DeviceHasVolume(AudioObjectID dev) {
+    for (AudioObjectPropertyElement el = 0; el <= 2; el++) {
+        AudioObjectPropertyAddress vol = Addr(kAudioDevicePropertyVolumeScalar, kAudioDevicePropertyScopeOutput, el);
+        if (AudioObjectHasProperty(dev, &vol)) return YES;
+    }
+    return NO;
 }
 
 static float DeviceVolumeGain(AudioObjectID dev) {
@@ -528,6 +571,7 @@ static void SetHardwareSilent(AudioObjectID dev, BOOL silent);
 @property (strong) NSString *failedSignature; // verhindert Endlosschleife: eigenes Aggregate löst Geräteliste-Änderung aus
 @property (strong) NSString *statusText;
 @property (strong) NSString *lastOutputUID;   // letzte Ausgabe außer dem BassJump, Ziel für guardDefaults
+@property (strong) NSString *profileUID;      // Ausgabe, zu der die aktuellen Klangwerte gehören
 @property (strong) NSTimer *timer;
 @property (strong) NSTimer *updateTimer;
 @property (strong) MainWindowController *window;
@@ -546,6 +590,7 @@ static void SetHardwareSilent(AudioObjectID dev, BOOL silent);
     CFAbsoluteTime _limitingUntil;  // bis dahin leuchtet die Begrenzer-Anzeige
     double _sampleRate;
     float _meter;
+    BOOL _calibrating;          // während der Kalibrierung kein Ruhemodus
 }
 
 - (NSUserDefaults *)defaults { return [NSUserDefaults standardUserDefaults]; }
@@ -587,6 +632,7 @@ static void SetHardwareSilent(AudioObjectID dev, BOOL silent);
     AudioObjectPropertyAddress def = Addr(kAudioHardwarePropertyDefaultOutputDevice, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain);
     AudioObjectAddPropertyListenerBlock(kAudioObjectSystemObject, &def, dispatch_get_main_queue(), ^(UInt32 n, const AudioObjectPropertyAddress *a) {
         [weakSelf guardDefaults];
+        [weakSelf loadProfile];
         [weakSelf reconcile];
         [weakSelf updateGain];
     });
@@ -597,6 +643,7 @@ static void SetHardwareSilent(AudioObjectID dev, BOOL silent);
         });
     }
     [self guardDefaults];
+    [self loadProfile];
 
     // Auch bei geöffnetem Menü weiterlaufen (Lautstärke-Nachführung, Ruhemodus)
     self.timer = [NSTimer timerWithTimeInterval:0.25 target:self selector:@selector(tick) userInfo:nil repeats:YES];
@@ -612,6 +659,7 @@ static void SetHardwareSilent(AudioObjectID dev, BOOL silent);
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
             [self.window snapshot:snap tab:0];
             [self.window snapshot:[snap stringByReplacingOccurrencesOfString:@".png" withString:@"-2.png"] tab:1];
+            [self.window snapshot:[snap stringByReplacingOccurrencesOfString:@".png" withString:@"-3.png"] tab:2];
         });
     }
 }
@@ -670,7 +718,7 @@ static void SetHardwareSilent(AudioObjectID dev, BOOL silent);
     BOOL sound = atomic_exchange(&_engine.inputPeak, 0.0f) > kSilenceThreshold;
     if (sound) _lastSound = now;
     BOOL wantStandby = _standby ? !sound : (now - _lastSound > kIdleSeconds);
-    wantStandby = wantStandby && [self.defaults boolForKey:@"idleStandby"];
+    wantStandby = wantStandby && [self.defaults boolForKey:@"idleStandby"] && !_calibrating;
     if (wantStandby == _standby) return;
     _standby = wantStandby;
     [self reconcile];
@@ -815,7 +863,7 @@ static void SetHardwareSilent(AudioObjectID dev, BOOL silent);
     } else {
         self.runningSignature = want;
         _lastSound = CFAbsoluteTimeGetCurrent();
-        self.statusText = _standby ? L(@"Ruhemodus – wartet auf Ton") : [NSString stringWithFormat:L(@"Aktiv: %@"), DeviceName(_bassJump)];
+        self.statusText = _standby ? L(@"Ruhemodus – wartet auf Ton") : [NSString stringWithFormat:L(@"Aktiv mit %@"), DeviceName(DefaultOutputDevice())];
     }
     SetHardwareSilent([self findBassJump], !_aggregate || _standby);
     NSLog(@"%@", self.statusText);
@@ -1335,6 +1383,107 @@ static NSArray<NSString *> *PresetKeys(void) { return @[@"crossover", @"levelDB"
     return match;
 }
 
+#pragma mark Werte je Ausgabe
+
+// Lautstärke, Übergangsfrequenz und Bass-Timing hängen von den Lautsprechern ab und werden je Ausgabe gemerkt
+// (Maximalpegel und Tiefbass-Schutz hängen am BassJump und gelten überall). Die Einstellungsschlüssel enthalten
+// immer die Werte der aktuellen Ausgabe; "outputProfiles" hält die aller Ausgaben, nach Geräte-UID.
+static NSArray<NSString *> *ProfileKeys(void) { return @[@"levelDB", @"crossover", @"bassOffsetMs"]; }
+
+- (NSString *)currentProfileUID {
+    AudioObjectID out = DefaultOutputDevice();
+    return out == kAudioObjectUnknown || LooksLikeBassJump(out) ? nil : DeviceUID(out);
+}
+
+- (void)saveProfile {
+    NSString *uid = self.profileUID;
+    if (!uid) return;
+    NSMutableDictionary *profiles = [[self.defaults dictionaryForKey:@"outputProfiles"] mutableCopy] ?: [NSMutableDictionary dictionary];
+    NSMutableDictionary *values = [NSMutableDictionary dictionary];
+    for (NSString *key in ProfileKeys()) values[key] = @([self.defaults doubleForKey:key]);
+    profiles[uid] = values;
+    [self.defaults setObject:profiles forKey:@"outputProfiles"];
+}
+
+// Neue Ausgabe: deren Werte laden. Kennt sie noch keine, übernimmt sie die bisherigen.
+- (void)loadProfile {
+    NSString *uid = [self currentProfileUID];
+    if (!uid || [uid isEqualToString:self.profileUID]) return;
+    self.profileUID = uid;
+    NSDictionary *values = [self.defaults dictionaryForKey:@"outputProfiles"][uid];
+    if (![values isKindOfClass:[NSDictionary class]]) { [self saveProfile]; return; }
+    for (NSString *key in ProfileKeys()) {
+        if ([values[key] respondsToSelector:@selector(doubleValue)]) [self.defaults setDouble:[values[key] doubleValue] forKey:key];
+    }
+    [self updateFilter];
+    [self updateGain];
+    [self updateDelay];
+}
+
+#pragma mark Kalibrierung (Schnittstelle für Calibration.m)
+
+- (void)setCalibrating:(BOOL)on {
+    _calibrating = on;
+    _lastSound = CFAbsoluteTimeGetCurrent();
+    [self checkIdle];
+}
+
+// Spielt ein Testsignal einmal ab: speaker auf den Lautsprechern, bass über den Bass-Weg (raw = ohne Filter,
+// Pegel und Begrenzer). Die Puffer müssen gültig bleiben, bis testPlaying NO liefert.
+- (BOOL)playTestSpeaker:(const float *)speaker bass:(const float *)bass frames:(UInt32)frames raw:(BOOL)raw {
+    if (!_aggregate || _standby || atomic_load(&_engine.testFrames) || frames == 0) return NO;
+    _engine.testSpeaker = speaker;
+    _engine.testBass = bass;
+    _engine.testRaw = raw;
+    _engine.testPos = 0;
+    atomic_store_explicit(&_engine.testFrames, frames, memory_order_release);
+    return YES;
+}
+
+- (BOOL)testPlaying { return atomic_load(&_engine.testFrames) != 0; }
+- (double)outputSampleRate { return _sampleRate; }
+- (AudioObjectID)measurementMicrophone { return FallbackMicrophone([self findBassJump]); }
+- (NSString *)currentOutputName { AudioObjectID out = DefaultOutputDevice(); return out ? DeviceName(out) : nil; }
+
+// Monitor ohne macOS-Lautstärke, den MonitorControl regelt: dessen Lautstärke 0…1, sonst -1
+- (float)monitorControlVolume {
+    float v; BOOL muted;
+    return MonitorControlValue(DefaultOutputDevice(), &v, &muted) && !DeviceHasVolume(DefaultOutputDevice()) ? v : -1;
+}
+
+- (NSDictionary *)calibrationForCurrentOutput {
+    NSString *uid = [self currentProfileUID];
+    NSDictionary *cal = uid ? [self.defaults dictionaryForKey:@"calibrations"][uid] : nil;
+    return [cal isKindOfClass:[NSDictionary class]] ? cal : nil;
+}
+
+// Ergebnis übernehmen: Bass-Timing gehört zur Ausgabe, der Maximalpegel zum BassJump (gilt überall).
+- (void)applyCalibration:(NSDictionary *)result {
+    NSString *uid = [self currentProfileUID];
+    if (!uid) return;
+    NSMutableDictionary *all = [[self.defaults dictionaryForKey:@"calibrations"] mutableCopy] ?: [NSMutableDictionary dictionary];
+    NSMutableDictionary *cal = [all[uid] isKindOfClass:[NSDictionary class]] ? [all[uid] mutableCopy] : [NSMutableDictionary dictionary];
+    [cal addEntriesFromDictionary:result];
+    cal[@"date"] = [NSDate date];
+    all[uid] = cal;
+    [self.defaults setObject:all forKey:@"calibrations"];
+    if (result[@"offsetMs"]) [self setOffsetMs:[result[@"offsetMs"] doubleValue]];
+    if (result[@"maxLevelDB"]) [self setMaxLevelDB:[result[@"maxLevelDB"] doubleValue]];
+    [self updateGain];
+}
+
+- (void)resetCalibration {
+    NSString *uid = [self currentProfileUID];
+    NSMutableDictionary *all = [[self.defaults dictionaryForKey:@"calibrations"] mutableCopy];
+    if (!uid || !all[uid]) return;
+    [all removeObjectForKey:uid];
+    [self.defaults setObject:all forKey:@"calibrations"];
+    [self setOffsetMs:0];
+    [self.defaults removeObjectForKey:@"maxLevelDB"];
+    [self updateLimit];
+    [self updateGain];
+}
+
 - (void)applyPresetAtIndex:(NSInteger)i {
     NSDictionary *values = self.presets[i][@"values"];
     for (NSString *key in values) [self.defaults setDouble:[values[key] doubleValue] forKey:key];
@@ -1342,6 +1491,7 @@ static NSArray<NSString *> *PresetKeys(void) { return @[@"crossover", @"levelDB"
     [self updateGain];
     [self updateDelay];
     [self updateLimit];
+    [self saveProfile];
 }
 
 - (void)saveUserPresetNamed:(NSString *)name {
@@ -1367,9 +1517,9 @@ static NSArray<NSString *> *PresetKeys(void) { return @[@"crossover", @"levelDB"
 - (BOOL)usesSystemTap { return [[self sourceUID] isEqualToString:kSourceSystemTap]; }
 
 - (void)setBassEnabled:(BOOL)on { self.failedSignature = nil; [self.defaults setBool:on forKey:@"enabled"]; [self reconcile]; }
-- (void)setLevelDB:(double)db { [self.defaults setDouble:db forKey:@"levelDB"]; [self updateGain]; }
-- (void)setCrossoverHz:(double)hz { [self.defaults setDouble:hz forKey:@"crossover"]; [self updateFilter]; }
-- (void)setOffsetMs:(double)ms { [self.defaults setDouble:ms forKey:@"bassOffsetMs"]; [self updateDelay]; }
+- (void)setLevelDB:(double)db { [self.defaults setDouble:db forKey:@"levelDB"]; [self updateGain]; [self saveProfile]; }
+- (void)setCrossoverHz:(double)hz { [self.defaults setDouble:hz forKey:@"crossover"]; [self updateFilter]; [self saveProfile]; }
+- (void)setOffsetMs:(double)ms { [self.defaults setDouble:ms forKey:@"bassOffsetMs"]; [self updateDelay]; [self saveProfile]; }
 - (void)setIdleStandby:(BOOL)on {
     [self.defaults setBool:on forKey:@"idleStandby"];
     _lastSound = CFAbsoluteTimeGetCurrent();
