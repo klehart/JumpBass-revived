@@ -1,0 +1,2 @@
+"NSAudioCaptureUsageDescription" = "JumpBass Revived reads the system audio to send the low frequencies to the BassJump subwoofer.";
+"NSMicrophoneUsageDescription" = "JumpBass Revived reads the loopback device to send the low frequencies to the BassJump subwoofer.";

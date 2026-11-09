@@ -13,6 +13,7 @@ rm build/x86_64 build/arm64
 cp Info.plist "$APP/Contents/Info.plist"
 mkdir -p "$APP/Contents/Resources"
 cp icon/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+cp -R de.lproj en.lproj "$APP/Contents/Resources/"
 # Mit dem Zertifikat "JumpBass Revived" bleibt die Signatur über Versionen gleich, und macOS behält die
 # Freigabe für die Systemaudioaufnahme. Ohne das Zertifikat (fremde Builds) ad-hoc signieren.
 IDENTITY=$(security find-identity -p codesigning 2>/dev/null | awk '/"JumpBass Revived"/ { print $2; exit }')

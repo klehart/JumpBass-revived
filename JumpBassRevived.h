@@ -3,6 +3,9 @@
 #import <Cocoa/Cocoa.h>
 #import <CoreAudio/CoreAudio.h>
 
+// Oberflächentexte: Deutsch steht im Code und dient als Schlüssel, en.lproj/Localizable.strings übersetzt.
+#define L(s) NSLocalizedString(s, nil)
+
 extern NSString *const kGateAlways;
 
 // BassJump-Lautstärkeregler, wahlweise in Prozent oder Dezibel (Einstellung "levelStyle").
@@ -33,8 +36,8 @@ static inline NSString *LevelText(double level, BOOL db) {
 static const double kHardwareCeilingDB = -10;
 static inline NSArray<NSNumber *> *MaxLevelChoices(void) { return @[@-10, @-12, @-15, @-18]; }
 static inline NSString *MaxLevelTitle(NSNumber *db) {
-    if (db.intValue == -10) return @"-10 dB (am Limit)";
-    if (db.intValue == -12) return @"-12 dB (empfohlen)";
+    if (db.intValue == -10) return L(@"-10 dB (am Limit)");
+    if (db.intValue == -12) return L(@"-12 dB (empfohlen)");
     return [NSString stringWithFormat:@"%@ dB", db];
 }
 
@@ -72,6 +75,10 @@ BOOL LooksLikeBassJump(AudioObjectID dev);
 - (void)setIdleStandby:(BOOL)on;
 - (BOOL)guardDefaultsEnabled;
 - (void)setGuardDefaults:(BOOL)on;  // BassJump nicht als Mikrofon/Standardausgabe zulassen
+- (BOOL)checkUpdatesEnabled;
+- (void)setCheckUpdates:(BOOL)on;
+- (NSString *)availableUpdate;      // neuere Version auf GitHub oder nil
+- (void)openUpdate:(id)sender;
 - (void)setBassJumpUID:(NSString *)uid; // nil = automatisch
 - (NSArray<NSString *> *)gateUIDs;
 - (void)toggleGateUID:(NSString *)uid;

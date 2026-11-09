@@ -29,6 +29,9 @@ static UInt32 kBufferFrames = 128;
 static const CFTimeInterval kIdleSeconds = 10;   // Stille, nach der der BassJump in den Ruhemodus geht
 static const float kSilenceThreshold = 0.0001f;  // -80 dBFS
 static const CFTimeInterval kRetrySeconds = 10;  // erneuter Startversuch nach einem Fehler
+static const NSTimeInterval kUpdateCheckInterval = 24 * 3600;
+static NSString *const kReleasesURL = @"https://github.com/klehart/JumpBass-revived/releases/latest";
+static NSString *const kLatestReleaseAPI = @"https://api.github.com/repos/klehart/JumpBass-revived/releases/latest";
 
 #pragma mark - Echtzeit-DSP
 
@@ -526,6 +529,7 @@ static void SetHardwareSilent(AudioObjectID dev, BOOL silent);
 @property (strong) NSString *statusText;
 @property (strong) NSString *lastOutputUID;   // letzte Ausgabe außer dem BassJump, Ziel für guardDefaults
 @property (strong) NSTimer *timer;
+@property (strong) NSTimer *updateTimer;
 @property (strong) MainWindowController *window;
 @end
 
@@ -562,6 +566,7 @@ static void SetHardwareSilent(AudioObjectID dev, BOOL silent);
         @"subsonicHz": @50.0,
         @"maxLevelDB": @-12.0,
         @"guardDefaults": @YES,
+        @"checkUpdates": @YES,
     }];
     // Frühere Stufen (-1 … -9 dB) lagen über der Übersteuerungsgrenze des BassJump
     if ([self.defaults objectForKey:@"maxLevelDB"] && [self.defaults doubleForKey:@"maxLevelDB"] > kHardwareCeilingDB)
@@ -597,6 +602,9 @@ static void SetHardwareSilent(AudioObjectID dev, BOOL silent);
     self.timer = [NSTimer timerWithTimeInterval:0.25 target:self selector:@selector(tick) userInfo:nil repeats:YES];
     [[NSRunLoop mainRunLoop] addTimer:self.timer forMode:NSRunLoopCommonModes];
     [self reconcile];
+    // Stündlich prüfen, ob die tägliche Update-Abfrage fällig ist (schlägt sie fehl, eine Stunde später erneut)
+    self.updateTimer = [NSTimer scheduledTimerWithTimeInterval:3600 target:self selector:@selector(checkForUpdate) userInfo:nil repeats:YES];
+    [self performSelector:@selector(checkForUpdate) withObject:nil afterDelay:10];
 
     NSString *snap = NSProcessInfo.processInfo.environment[@"JUMPBASS_SNAPSHOT"];
     if (snap) {
@@ -693,6 +701,42 @@ static void SetHardwareSilent(AudioObjectID dev, BOOL silent);
 - (BOOL)guardDefaultsEnabled { return [self.defaults boolForKey:@"guardDefaults"]; }
 - (void)setGuardDefaults:(BOOL)on { [self.defaults setBool:on forKey:@"guardDefaults"]; [self guardDefaults]; }
 
+#pragma mark Update-Hinweis
+
+// Einmal am Tag bei GitHub die Nummer der neuesten Version abfragen. Es wird nichts übertragen außer der Anfrage selbst.
+- (void)checkForUpdate {
+    if (![self checkUpdatesEnabled]) return;
+    NSDate *last = [self.defaults objectForKey:@"lastUpdateCheck"];
+    if ([last isKindOfClass:[NSDate class]] && -last.timeIntervalSinceNow < kUpdateCheckInterval) return;
+    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:kLatestReleaseAPI]];
+    [req setValue:@"application/vnd.github+json" forHTTPHeaderField:@"Accept"];
+    [[[NSURLSession sharedSession] dataTaskWithRequest:req completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
+        NSDictionary *json = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+        NSString *tag = [json isKindOfClass:[NSDictionary class]] ? json[@"tag_name"] : nil;
+        if (![tag isKindOfClass:[NSString class]]) return;
+        NSString *latest = [tag hasPrefix:@"v"] ? [tag substringFromIndex:1] : tag;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self.defaults setObject:[NSDate date] forKey:@"lastUpdateCheck"];
+            [self.defaults setObject:latest forKey:@"latestVersion"];
+        });
+    }] resume];
+}
+
+- (NSString *)availableUpdate {
+    if (![self checkUpdatesEnabled]) return nil;
+    NSString *latest = [self.defaults stringForKey:@"latestVersion"];
+    NSString *mine = [NSBundle mainBundle].infoDictionary[@"CFBundleShortVersionString"];
+    return latest && mine && [latest compare:mine options:NSNumericSearch] == NSOrderedDescending ? latest : nil;
+}
+
+- (void)openUpdate:(id)sender { [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:kReleasesURL]]; }
+- (BOOL)checkUpdatesEnabled { return [self.defaults boolForKey:@"checkUpdates"]; }
+- (void)setCheckUpdates:(BOOL)on {
+    [self.defaults setBool:on forKey:@"checkUpdates"];
+    [self.defaults removeObjectForKey:@"lastUpdateCheck"];
+    [self checkForUpdate];
+}
+
 - (AudioObjectID)findBassJump {
     NSString *uid = [self.defaults stringForKey:@"bassJumpUID"];
     if (uid) return DeviceForUID(uid);
@@ -756,10 +800,10 @@ static void SetHardwareSilent(AudioObjectID dev, BOOL silent);
 
     if (!want) {
         SetHardwareSilent([self findBassJump], YES);
-        if (![self.defaults boolForKey:@"enabled"]) self.statusText = @"Ausgeschaltet";
-        else if (![self findBassJump]) self.statusText = @"BassJump nicht gefunden";
-        else if ([[self sourceUID] isEqualToString:kSourceSystemTap]) self.statusText = [NSString stringWithFormat:@"Pausiert (Ausgabe über %@)", DeviceName(DefaultOutputDevice())];
-        else self.statusText = @"Keine Tonquelle gewählt (siehe Tonquelle)";
+        if (![self.defaults boolForKey:@"enabled"]) self.statusText = L(@"Ausgeschaltet");
+        else if (![self findBassJump]) self.statusText = L(@"BassJump nicht gefunden");
+        else if ([[self sourceUID] isEqualToString:kSourceSystemTap]) self.statusText = [NSString stringWithFormat:L(@"Pausiert (Ausgabe über %@)"), DeviceName(DefaultOutputDevice())];
+        else self.statusText = L(@"Keine Tonquelle gewählt (siehe Tonquelle)");
         return;
     }
     NSString *error = [self startEngine];
@@ -771,7 +815,7 @@ static void SetHardwareSilent(AudioObjectID dev, BOOL silent);
     } else {
         self.runningSignature = want;
         _lastSound = CFAbsoluteTimeGetCurrent();
-        self.statusText = _standby ? @"Ruhemodus – wartet auf Ton" : [NSString stringWithFormat:@"Aktiv: %@", DeviceName(_bassJump)];
+        self.statusText = _standby ? L(@"Ruhemodus – wartet auf Ton") : [NSString stringWithFormat:L(@"Aktiv: %@"), DeviceName(_bassJump)];
     }
     SetHardwareSilent([self findBassJump], !_aggregate || _standby);
     NSLog(@"%@", self.statusText);
@@ -814,7 +858,7 @@ static void SetHardwareSilent(AudioObjectID dev, BOOL silent);
             // "WhenTapped": beendet sich die App, ist der Ton sofort wieder da.
             tapDesc.muteBehavior = _standby ? CATapUnmuted : CATapMutedWhenTapped;
             OSStatus err = AudioHardwareCreateProcessTap(tapDesc, &_tap);
-            if (err != noErr) return [NSString stringWithFormat:@"Fehler: Systemton-Tap (%d)", (int)err];
+            if (err != noErr) return [NSString stringWithFormat:L(@"Fehler: Systemton-Tap (%d)"), (int)err];
 
             // Das aktuelle Ausgabegerät ist Taktgeber: Der Tap läuft in dessen Takt und braucht
             // keine Drift-Kompensation. Nur der BassJump wird angeglichen.
@@ -868,7 +912,7 @@ static void SetHardwareSilent(AudioObjectID dev, BOOL silent);
     }
 
     OSStatus err = AudioHardwareCreateAggregateDevice((__bridge CFDictionaryRef)desc, &_aggregate);
-    if (err != noErr) return [NSString stringWithFormat:@"Fehler: Aggregate-Device (%d)", (int)err];
+    if (err != noErr) return [NSString stringWithFormat:L(@"Fehler: Aggregate-Device (%d)"), (int)err];
     SetBufferFrames(_aggregate, kBufferFrames);
     // Der Tap-Stream liegt hinter allen Subdevice-Eingängen, also immer als letzter Eingang.
     if (tapMode) _engine.inputBuffer = StreamCount(_aggregate, kAudioObjectPropertyScopeInput) - 1;
@@ -896,11 +940,11 @@ static void SetHardwareSilent(AudioObjectID dev, BOOL silent);
     });
 
     err = AudioDeviceCreateIOProcID(_aggregate, BassIOProc, &_engine, &_ioProc);
-    if (err != noErr) return [NSString stringWithFormat:@"Fehler: IOProc (%d)", (int)err];
+    if (err != noErr) return [NSString stringWithFormat:L(@"Fehler: IOProc (%d)"), (int)err];
     SetStreamUsage(_aggregate, _ioProc, kAudioObjectPropertyScopeInput, _engine.inputBuffer, 1);
     if (_standby) SetStreamUsage(_aggregate, _ioProc, kAudioObjectPropertyScopeOutput, 0, 0);
     err = AudioDeviceStart(_aggregate, _ioProc);
-    if (err != noErr) return [NSString stringWithFormat:@"Fehler: Start (%d) – Berechtigung für Audioaufnahme erteilt?", (int)err];
+    if (err != noErr) return [NSString stringWithFormat:L(@"Fehler: Start (%d) – Berechtigung für Audioaufnahme erteilt?"), (int)err];
     return nil;
 }
 
@@ -1082,7 +1126,7 @@ static SInt32 OutputLatency(AudioObjectID dev) {
 // Lautstärkeregler direkt im Menü, wie der Lautstärkeregler von macOS
 - (NSMenuItem *)volumeMenuItem {
     NSView *v = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 260, 46)];
-    NSTextField *title = [NSTextField labelWithString:@"BassJump-Lautstärke"];
+    NSTextField *title = [NSTextField labelWithString:L(@"BassJump-Lautstärke")];
     title.font = [NSFont menuFontOfSize:0];
     title.textColor = NSColor.secondaryLabelColor;
     title.frame = NSMakeRect(20, 25, 160, 17);
@@ -1123,10 +1167,10 @@ static SInt32 OutputLatency(AudioObjectID dev) {
 - (void)uninstall:(id)sender {
     [NSApp activateIgnoringOtherApps:YES];
     NSAlert *alert = [[NSAlert alloc] init];
-    alert.messageText = @"JumpBass Revived deinstallieren?";
-    alert.informativeText = @"Die App wird beendet und in den Papierkorb gelegt. Einstellungen, Anmeldeobjekt und Berechtigungen werden entfernt. Der BassJump funktioniert danach wieder als normales USB-Audiogerät.";
-    [alert addButtonWithTitle:@"Deinstallieren"];
-    [alert addButtonWithTitle:@"Abbrechen"];
+    alert.messageText = L(@"JumpBass Revived deinstallieren?");
+    alert.informativeText = L(@"Die App wird beendet und in den Papierkorb gelegt. Einstellungen, Anmeldeobjekt und Berechtigungen werden entfernt. Der BassJump funktioniert danach wieder als normales USB-Audiogerät.");
+    [alert addButtonWithTitle:L(@"Deinstallieren")];
+    [alert addButtonWithTitle:L(@"Abbrechen")];
     if (@available(macOS 11.0, *)) alert.buttons[0].hasDestructiveAction = YES;
     if ([alert runModal] != NSAlertFirstButtonReturn) return;
 
@@ -1166,15 +1210,17 @@ static SInt32 OutputLatency(AudioObjectID dev) {
     NSMenuItem *status = [[NSMenuItem alloc] initWithTitle:self.statusText ?: @"" action:nil keyEquivalent:@""];
     status.enabled = NO;
     [menu addItem:status];
+    NSString *update = [self availableUpdate];
+    if (update) [menu addItem:[self item:[NSString stringWithFormat:L(@"Update verfügbar: Version %@ …"), update] action:@selector(openUpdate:) rep:nil checked:NO]];
     if (_aggregate) {
         int bars = (int)lroundf(MIN(_meter, 1.0f) * 20);
         NSString *meter = [@"" stringByPaddingToLength:bars withString:@"▮" startingAtIndex:0];
-        NSMenuItem *m = [[NSMenuItem alloc] initWithTitle:[NSString stringWithFormat:@"Pegel: %@", bars ? meter : @"–"] action:nil keyEquivalent:@""];
+        NSMenuItem *m = [[NSMenuItem alloc] initWithTitle:[NSString stringWithFormat:L(@"Pegel: %@"), bars ? meter : @"–"] action:nil keyEquivalent:@""];
         m.enabled = NO;
         [menu addItem:m];
     }
-    [menu addItem:[self item:@"Bass aktiv" action:@selector(toggleEnabled:) rep:nil checked:[d boolForKey:@"enabled"]]];
-    [menu addItem:[self item:@"Fenster öffnen …" action:@selector(showWindow:) rep:nil checked:NO]];
+    [menu addItem:[self item:L(@"Bass aktiv") action:@selector(toggleEnabled:) rep:nil checked:[d boolForKey:@"enabled"]]];
+    [menu addItem:[self item:L(@"Fenster öffnen …") action:@selector(showWindow:) rep:nil checked:NO]];
     [menu addItem:[NSMenuItem separatorItem]];
 
     NSMutableArray *presetItems = [NSMutableArray array];
@@ -1183,41 +1229,41 @@ static SInt32 OutputLatency(AudioObjectID dev) {
         if ([p[@"user"] boolValue] && (i == 0 || ![self.presets[i - 1][@"user"] boolValue])) [presetItems addObject:[NSMenuItem separatorItem]];
         [presetItems addObject:[self item:p[@"name"] action:@selector(setPreset:) rep:@(i) checked:(NSInteger)i == current]];
     }];
-    [menu addItem:[self submenu:@"Voreinstellung" items:presetItems]];
+    [menu addItem:[self submenu:L(@"Voreinstellung") items:presetItems]];
 
     [menu addItem:[self volumeMenuItem]];
-    [menu addItem:[self submenu:@"Lautstärkeregler in" items:@[
-        [self item:@"Prozent (100 % = normal)" action:@selector(chooseLevelStyle:) rep:@NO checked:!LevelStyleIsDB()],
-        [self item:@"Dezibel (Bass-Pegel)" action:@selector(chooseLevelStyle:) rep:@YES checked:LevelStyleIsDB()] ]]];
+    [menu addItem:[self submenu:L(@"Lautstärkeregler in") items:@[
+        [self item:L(@"Prozent (100 % = normal)") action:@selector(chooseLevelStyle:) rep:@NO checked:!LevelStyleIsDB()],
+        [self item:L(@"Dezibel (Bass-Pegel)") action:@selector(chooseLevelStyle:) rep:@YES checked:LevelStyleIsDB()] ]]];
 
     NSMutableArray *xoItems = [NSMutableArray array];
     for (NSNumber *hz in @[@40, @60, @80, @100, @120, @150, @175, @200, @250, @300, @400, @500]) {
         BOOL on = fabs([d doubleForKey:@"crossover"] - hz.doubleValue) < 0.5;
         [xoItems addObject:[self item:[NSString stringWithFormat:@"%@ Hz", hz] action:@selector(setCrossover:) rep:hz checked:on]];
     }
-    [menu addItem:[self submenu:[NSString stringWithFormat:@"Übergangsfrequenz (%.0f Hz)", [d doubleForKey:@"crossover"]] items:xoItems]];
+    [menu addItem:[self submenu:[NSString stringWithFormat:L(@"Übergangsfrequenz (%.0f Hz)"), [d doubleForKey:@"crossover"]] items:xoItems]];
 
     NSMutableArray *offsetItems = [NSMutableArray array];
     for (NSNumber *ms in @[@-100, @-50, @-30, @-20, @-10, @-5, @0, @5, @10, @20, @30, @50, @100, @200]) {
         BOOL on = fabs([d doubleForKey:@"bassOffsetMs"] - ms.doubleValue) < 0.5;
-        NSString *title = ms.intValue == 0 ? @"0 ms (automatisch)" : [NSString stringWithFormat:@"%+d ms%@", ms.intValue, ms.intValue > 0 ? @" (Bass später)" : @" (Bass früher)"];
+        NSString *title = ms.intValue == 0 ? L(@"0 ms (automatisch)") : [NSString stringWithFormat:@"%+d ms%@", ms.intValue, ms.intValue > 0 ? L(@" (Bass später)") : L(@" (Bass früher)")];
         [offsetItems addObject:[self item:title action:@selector(setBassOffset:) rep:ms checked:on]];
     }
-    [menu addItem:[self submenu:[NSString stringWithFormat:@"Bass-Timing (%+.0f ms)", [d doubleForKey:@"bassOffsetMs"]] items:offsetItems]];
+    [menu addItem:[self submenu:[NSString stringWithFormat:L(@"Bass-Timing (%+.0f ms)"), [d doubleForKey:@"bassOffsetMs"]] items:offsetItems]];
     [menu addItem:[NSMenuItem separatorItem]];
 
     NSArray *outputs = OutputDevices();
     NSString *bjSetting = [d stringForKey:@"bassJumpUID"];
-    NSMutableArray *bjItems = [NSMutableArray arrayWithObject:[self item:@"Automatisch erkennen" action:@selector(setBassJumpDevice:) rep:nil checked:bjSetting == nil]];
+    NSMutableArray *bjItems = [NSMutableArray arrayWithObject:[self item:L(@"Automatisch erkennen") action:@selector(setBassJumpDevice:) rep:nil checked:bjSetting == nil]];
     for (NSNumber *n in outputs) {
         NSString *uid = DeviceUID(n.unsignedIntValue);
         [bjItems addObject:[self item:DeviceName(n.unsignedIntValue) action:@selector(setBassJumpDevice:) rep:uid checked:[uid isEqualToString:bjSetting]]];
     }
-    [menu addItem:[self submenu:@"BassJump-Gerät" items:bjItems]];
+    [menu addItem:[self submenu:L(@"BassJump-Gerät") items:bjItems]];
 
     NSString *src = [self sourceUID];
     NSMutableArray *srcItems = [NSMutableArray array];
-    NSMenuItem *tapItem = [self item:@"Systemton (ab macOS 14.2)" action:@selector(setSource:) rep:kSourceSystemTap checked:[src isEqualToString:kSourceSystemTap]];
+    NSMenuItem *tapItem = [self item:L(@"Systemton (ab macOS 14.2)") action:@selector(setSource:) rep:kSourceSystemTap checked:[src isEqualToString:kSourceSystemTap]];
     tapItem.enabled = [self tapSupported];
     [srcItems addObject:tapItem];
     [srcItems addObject:[NSMenuItem separatorItem]];
@@ -1225,17 +1271,17 @@ static SInt32 OutputLatency(AudioObjectID dev) {
         NSString *uid = DeviceUID(n.unsignedIntValue);
         [srcItems addObject:[self item:[NSString stringWithFormat:@"Loopback: %@", DeviceName(n.unsignedIntValue)] action:@selector(setSource:) rep:uid checked:[uid isEqualToString:src]]];
     }
-    [menu addItem:[self submenu:@"Tonquelle" items:srcItems]];
+    [menu addItem:[self submenu:L(@"Tonquelle") items:srcItems]];
 
     if (src && ![src isEqualToString:kSourceSystemTap]) {
         NSString *pass = [self passthroughUID];
-        NSMutableArray *passItems = [NSMutableArray arrayWithObject:[self item:@"Keine" action:@selector(setPassthrough:) rep:kPassNone checked:[pass isEqualToString:kPassNone]]];
+        NSMutableArray *passItems = [NSMutableArray arrayWithObject:[self item:L(@"Keine") action:@selector(setPassthrough:) rep:kPassNone checked:[pass isEqualToString:kPassNone]]];
         for (NSNumber *n in outputs) {
             NSString *uid = DeviceUID(n.unsignedIntValue);
             if ([uid isEqualToString:src] || LooksLikeBassJump(n.unsignedIntValue)) continue;
             [passItems addObject:[self item:DeviceName(n.unsignedIntValue) action:@selector(setPassthrough:) rep:uid checked:[uid isEqualToString:pass]]];
         }
-        [menu addItem:[self submenu:@"Vollton weiterleiten an" items:passItems]];
+        [menu addItem:[self submenu:L(@"Vollton weiterleiten an") items:passItems]];
     }
     [menu addItem:[NSMenuItem separatorItem]];
 
@@ -1243,9 +1289,9 @@ static SInt32 OutputLatency(AudioObjectID dev) {
     for (NSNumber *db in MaxLevelChoices()) {
         [maxItems addObject:[self item:MaxLevelTitle(db) action:@selector(chooseMaxLevel:) rep:db checked:fabs([d doubleForKey:@"maxLevelDB"] - db.doubleValue) < 0.5]];
     }
-    [menu addItem:[self submenu:@"Maximalpegel (gegen Krachen)" items:maxItems]];
+    [menu addItem:[self submenu:L(@"Maximalpegel (gegen Krachen)") items:maxItems]];
     [menu addItem:[NSMenuItem separatorItem]];
-    NSMenuItem *quit = [[NSMenuItem alloc] initWithTitle:@"Beenden" action:@selector(terminate:) keyEquivalent:@"q"];
+    NSMenuItem *quit = [[NSMenuItem alloc] initWithTitle:L(@"Beenden") action:@selector(terminate:) keyEquivalent:@"q"];
     [menu addItem:quit];
 }
 
@@ -1258,12 +1304,12 @@ static NSArray<NSString *> *PresetKeys(void) { return @[@"crossover", @"levelDB"
 // Die ersten fünf stammen aus der Original-Software (SettingsDB.plist, Lautstärke relativ zu "Default" 0.6).
 - (NSArray<NSDictionary *> *)presets {
     double (^orig)(double) = ^double(double v) { return 20.0 * log10(v / 0.6); };
-    NSArray *raw = @[ @[@"Standard", @150, @(orig(0.6))], @[@"Klassik", @175, @(orig(0.5))], @[@"Pop", @200, @(orig(0.75))],
+    NSArray *raw = @[ @[L(@"Standard"), @150, @(orig(0.6))], @[L(@"Klassik"), @175, @(orig(0.5))], @[@"Pop", @200, @(orig(0.75))],
                       @[@"R&B", @150, @(orig(1.0))], @[@"Rock", @175, @(orig(0.8))],
-                      @[@"Jazz", @120, @-1.0], @[@"Akustik", @100, @-3.0], @[@"Hip-Hop", @120, @2.0],
-                      @[@"Elektronisch", @100, @2.0], @[@"Metal", @175, @0.0], @[@"Film & Serien", @120, @1.0],
-                      @[@"Spiele", @150, @1.0], @[@"Sprache & Podcast", @80, @-6.0], @[@"Nachtmodus", @150, @-9.0],
-                      @[@"Volle Fülle", @200, @1.0], @[@"Maximaler Bass", @175, @3.0] ];
+                      @[@"Jazz", @120, @-1.0], @[L(@"Akustik"), @100, @-3.0], @[@"Hip-Hop", @120, @2.0],
+                      @[L(@"Elektronisch"), @100, @2.0], @[@"Metal", @175, @0.0], @[L(@"Film & Serien"), @120, @1.0],
+                      @[L(@"Spiele"), @150, @1.0], @[L(@"Sprache & Podcast"), @80, @-6.0], @[L(@"Nachtmodus"), @150, @-9.0],
+                      @[L(@"Volle Fülle"), @200, @1.0], @[L(@"Maximaler Bass"), @175, @3.0] ];
     NSMutableArray *r = [NSMutableArray array];
     for (NSArray *p in raw) [r addObject:@{ @"name": p[0], @"values": @{ @"crossover": p[1], @"levelDB": p[2] } }];
     for (NSDictionary *p in [self.defaults arrayForKey:@"userPresets"]) {

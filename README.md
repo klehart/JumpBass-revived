@@ -25,7 +25,7 @@ That is exactly what JumpBass Revived does.
   <img src="docs/window-settings.png" width="380" alt="Window: settings">
 </p>
 
-<p align="center"><sub>The user interface is currently in German.</sub></p>
+<p align="center"><sub>The user interface is available in English and German and follows the system language.</sub></p>
 
 ## Features
 
@@ -46,6 +46,8 @@ That is exactly what JumpBass Revived does.
 - **Selectable outputs:** e.g. only with the MacBook speakers and the external display, not with headphones
 - **Interface:** window with an analog VU meter and an ⓘ explanation for every setting, plus quick
   access from the menu bar (icon derived from the app icon, greyed out when inactive)
+- **Update notice:** checks GitHub once a day for a new release (can be turned off; nothing is installed automatically)
+- **Languages:** English and German
 - **Universal binary:** Intel and Apple Silicon
 
 ## How it works
@@ -133,6 +135,7 @@ sudo ./alte-software-entfernen.sh
 | Maximalpegel (maximum level) | Ceiling of the limiter, default -12 dB. Measured: the BassJump's amplifier clips from about -10 dBFS, so higher levels are not offered. |
 | Ruhemodus (standby) | Releases the BassJump during silence (saves CPU, lets the BassJump enter its own standby; no audible hiss difference was measured). |
 | BassJump spielt mit bei (play with) | Output devices for which the bass is added. |
+| Nach Updates suchen (check for updates) | Asks GitHub once a day for the latest version number and shows a notice in the window and menu. |
 | Nur als Subwoofer nutzen (subwoofer only) | Switches the default input/output back if macOS selects the BassJump. |
 
 ## Uninstalling

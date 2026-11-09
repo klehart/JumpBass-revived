@@ -3,13 +3,18 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
-	<string>de</string>
+	<string>en</string>
 	<key>CFBundleExecutable</key>
 	<string>JumpBassRevived</string>
 	<key>CFBundleIconFile</key>
 	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
 	<string>io.github.jumpbassrevived</string>
+	<key>CFBundleLocalizations</key>
+	<array>
+		<string>de</string>
+		<string>en</string>
+	</array>
 	<key>CFBundleName</key>
 	<string>JumpBass Revived</string>
 	<key>CFBundlePackageType</key>

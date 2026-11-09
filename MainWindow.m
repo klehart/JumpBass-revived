@@ -154,7 +154,7 @@ static double ScalePos(double vu) {
     NSSlider *_level, *_crossover, *_offset;
     NSTextField *_levelValue, *_crossoverValue, *_offsetValue;
     NSView *_gateBox;
-    NSButton *_idle, *_login, *_guard;
+    NSButton *_idle, *_login, *_guard, *_updates, *_update;
     NSPopover *_infoPopover;
     NSString *_deviceSignature;
 }
@@ -225,7 +225,7 @@ static double ScalePos(double vu) {
 - (void)addInfoAt:(NSPoint)p in:(NSView *)view text:(NSString *)text {
     NSButton *b = [NSButton buttonWithTitle:@"ⓘ" target:self action:@selector(showInfo:)];
     if (@available(macOS 11.0, *)) {
-        NSImage *img = [NSImage imageWithSystemSymbolName:@"info.circle" accessibilityDescription:@"Erklärung"];
+        NSImage *img = [NSImage imageWithSystemSymbolName:@"info.circle" accessibilityDescription:L(@"Erklärung")];
         if (img) { b.image = img; b.imagePosition = NSImageOnly; }
     }
     b.bordered = NO;
@@ -282,7 +282,7 @@ static double ScalePos(double vu) {
 
     // Kopfzeile
     [root addSubview:[self label:@"JumpBass" size:22 weight:NSFontWeightBold frame:NSMakeRect(24, 34, 250, 28)]];
-    _status = [self label:@"" size:12 weight:NSFontWeightRegular frame:NSMakeRect(24, 62, 300, 18)];
+    _status = [self label:@"" size:12 weight:NSFontWeightRegular frame:NSMakeRect(24, 62, 250, 18)];
     _status.textColor = [NSColor secondaryLabelColor];
     [root addSubview:_status];
     if (@available(macOS 10.15, *)) {
@@ -292,14 +292,23 @@ static double ScalePos(double vu) {
         [root addSubview:sw];
         _power = sw;
     } else {
-        _power = [self checkbox:@"An" frame:NSMakeRect(kWidth - 24 - 50, 40, 50, 24) action:@selector(togglePower:)];
+        _power = [self checkbox:L(@"An") frame:NSMakeRect(kWidth - 24 - 50, 40, 50, 24) action:@selector(togglePower:)];
         [root addSubview:_power];
     }
+    // Hinweis auf eine neue Version, rechts neben der Statuszeile
+    _update = [NSButton buttonWithTitle:@"" target:_app action:@selector(openUpdate:)];
+    _update.bordered = NO;
+    _update.font = [NSFont systemFontOfSize:12 weight:NSFontWeightMedium];
+    if (@available(macOS 10.14, *)) _update.contentTintColor = Accent();
+    _update.alignment = NSTextAlignmentRight;
+    _update.frame = NSMakeRect(kWidth - 24 - 160, 62, 160, 18);
+    _update.hidden = YES;
+    [root addSubview:_update];
 
     _meter = [[VUMeterView alloc] initWithFrame:NSMakeRect(24, 92, kWidth - 48, 170)];
     [root addSubview:_meter];
 
-    _tabs = [NSSegmentedControl segmentedControlWithLabels:@[@"Klang", @"Einstellungen"] trackingMode:NSSegmentSwitchTrackingSelectOne target:self action:@selector(switchTab:)];
+    _tabs = [NSSegmentedControl segmentedControlWithLabels:@[L(@"Klang"), L(@"Einstellungen")] trackingMode:NSSegmentSwitchTrackingSelectOne target:self action:@selector(switchTab:)];
     // BassJump-Lautstärke, wie im Original direkt unter der Anzeige
     NSImageView *quiet = [self symbol:@"speaker.fill" fallback:@"–" frame:NSMakeRect(24, 276, 22, 22)];
     NSImageView *loud = [self symbol:@"speaker.wave.3.fill" fallback:@"+" frame:NSMakeRect(kWidth - 24 - 86 - 30, 276, 26, 22)];
@@ -309,10 +318,10 @@ static double ScalePos(double vu) {
     [root addSubview:_level];
     _levelValue = [self label:@"" size:13 weight:NSFontWeightMedium frame:NSMakeRect(kWidth - 24 - 78, 278, 62, 18)];
     [root addSubview:_levelValue];
-    [self addInfoAt:NSMakePoint(kWidth - 24 - 16, 279) in:root text:@"BassJump-Lautstärke im Verhältnis zu den Lautsprechern: 100 % = ausgewogen, 200 % = +24 dB.\n\n"
+    [self addInfoAt:NSMakePoint(kWidth - 24 - 16, 279) in:root text:L(@"BassJump-Lautstärke im Verhältnis zu den Lautsprechern: 100 % = ausgewogen, 200 % = +24 dB.\n\n"
                    "Sie folgt automatisch der Lautstärke des Macs – bei Monitoren, die per MonitorControl geregelt werden, "
                    "auch deren Lautstärke. Hohe Werte bringen den Bass schnell an den Maximalpegel; dann leuchtet LIMIT "
-                   "im Messgerät und laute Stellen werden abgeregelt."];
+                   "im Messgerät und laute Stellen werden abgeregelt.")];
 
     _tabs.frame = NSMakeRect((kWidth - 260) / 2, 316, 260, 24);
     _tabs.selectedSegment = 0;
@@ -333,57 +342,57 @@ static double ScalePos(double vu) {
 - (void)buildSoundPane {
     CGFloat lx = 24, cx = 168, cw = 200, vx = 376, y = 10, row = 46;
 
-    [self heading:@"Klangeinstellung" frame:NSMakeRect(lx, y + 3, 140, 18) in:_soundPane info:
-        @"Fertige Kombinationen aus Übergangsfrequenz und Lautstärke.\n\n"
+    [self heading:L(@"Klangeinstellung") frame:NSMakeRect(lx, y + 3, 140, 18) in:_soundPane info:
+        L(@"Fertige Kombinationen aus Übergangsfrequenz und Lautstärke.\n\n"
          "Mit + speicherst du die aktuellen Werte – inklusive Bass-Timing, Tiefbass-Schutz und Maximalpegel – als eigenes Preset; "
-         "mit − löschst du das ausgewählte eigene Preset. „Eigene Einstellung“ heißt: Die Werte passen zu keinem Preset."];
+         "mit − löschst du das ausgewählte eigene Preset. „Eigene Einstellung“ heißt: Die Werte passen zu keinem Preset.")];
     _presets = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(cx - 3, y - 1, cw + 6, 26) pullsDown:NO];
     _presets.target = self;
     _presets.action = @selector(choosePreset:);
     _presets.autoenablesItems = NO;
     [_soundPane addSubview:_presets];
     _savePreset = [self iconButton:@"plus" fallback:@"+" frame:NSMakeRect(vx, y, 30, 24) action:@selector(savePreset:)];
-    _savePreset.toolTip = @"Aktuelle Einstellung als eigenes Preset speichern";
+    _savePreset.toolTip = L(@"Aktuelle Einstellung als eigenes Preset speichern");
     _deletePreset = [self iconButton:@"minus" fallback:@"−" frame:NSMakeRect(vx + 34, y, 30, 24) action:@selector(deletePreset:)];
-    _deletePreset.toolTip = @"Ausgewähltes eigenes Preset löschen";
+    _deletePreset.toolTip = L(@"Ausgewähltes eigenes Preset löschen");
     [_soundPane addSubview:_savePreset];
     [_soundPane addSubview:_deletePreset];
     y += row;
 
 
-    [self heading:@"Übergangsfrequenz" frame:NSMakeRect(lx, y + 3, 140, 18) in:_soundPane info:
-        @"Bis zu dieser Frequenz spielt der BassJump, darüber nur die Lautsprecher.\n\n"
+    [self heading:L(@"Übergangsfrequenz") frame:NSMakeRect(lx, y + 3, 140, 18) in:_soundPane info:
+        L(@"Bis zu dieser Frequenz spielt der BassJump, darüber nur die Lautsprecher.\n\n"
          "80–120 Hz: nur tiefer Bass, der BassJump fällt nicht als eigene Quelle auf. "
          "150 Hz: gute Wahl für MacBook-Lautsprecher (Standard). "
-         "Ab etwa 250 Hz klingt es voller, aber man hört, dass der Ton auch aus dem BassJump kommt."];
+         "Ab etwa 250 Hz klingt es voller, aber man hört, dass der Ton auch aus dem BassJump kommt.")];
     _crossover = [self sliderMin:40 max:500 frame:NSMakeRect(cx, y, cw, 24) action:@selector(changeCrossover:)];
     [_soundPane addSubview:_crossover];
     _crossoverValue = [self label:@"" size:12 weight:NSFontWeightRegular frame:NSMakeRect(vx, y + 4, 70, 18)];
     [_soundPane addSubview:_crossoverValue];
     y += row;
 
-    [self heading:@"Bass-Timing" frame:NSMakeRect(lx, y + 3, 140, 18) in:_soundPane info:
-        @"Gleicht aus, dass Lautsprecher und BassJump den Ton unterschiedlich schnell ausgeben.\n\n"
+    [self heading:L(@"Bass-Timing") frame:NSMakeRect(lx, y + 3, 140, 18) in:_soundPane info:
+        L(@"Gleicht aus, dass Lautsprecher und BassJump den Ton unterschiedlich schnell ausgeben.\n\n"
          "0 = automatisch aus den gemeldeten Gerätelatenzen – das passt meistens. Klingt der Bass verwaschen "
-         "oder „hinterher“, in kleinen Schritten verschieben: plus = Bass später, minus = Bass früher."];
+         "oder „hinterher“, in kleinen Schritten verschieben: plus = Bass später, minus = Bass früher.")];
     _offset = [self sliderMin:-100 max:200 frame:NSMakeRect(cx, y, cw, 24) action:@selector(changeOffset:)];
     [_soundPane addSubview:_offset];
     _offsetValue = [self label:@"" size:12 weight:NSFontWeightRegular frame:NSMakeRect(vx, y + 4, 70, 18)];
     [_soundPane addSubview:_offsetValue];
-    NSTextField *hint = [self label:@"0 = automatisch abgeglichen · plus = Bass später" size:11 weight:NSFontWeightRegular frame:NSMakeRect(cx, y + 26, 280, 16)];
+    NSTextField *hint = [self label:L(@"0 = automatisch abgeglichen · plus = Bass später") size:11 weight:NSFontWeightRegular frame:NSMakeRect(cx, y + 26, 280, 16)];
     hint.textColor = [NSColor tertiaryLabelColor];
     [_soundPane addSubview:hint];
     y += row + 8;
 
     // Schutz vor Krachen: Frequenzen, die der kleine Treiber nicht schafft, und zu hohe Spitzen
-    [self heading:@"Tiefbass-Schutz" frame:NSMakeRect(lx, y + 3, 140, 18) in:_soundPane info:
-        @"Filtert Frequenzen unterhalb des gewählten Werts heraus.\n\n"
+    [self heading:L(@"Tiefbass-Schutz") frame:NSMakeRect(lx, y + 3, 140, 18) in:_soundPane info:
+        L(@"Filtert Frequenzen unterhalb des gewählten Werts heraus.\n\n"
          "So tiefe Töne kann der kleine Lautsprecher kaum hörbar wiedergeben, sie brauchen aber viel Membranhub "
          "und Verstärkerleistung – bei lauter Musik führt das zum Krachen. Gemessen ist 40 Hz am BassJump über 10 dB leiser "
-         "als 60 Hz, übersteuert aber genauso früh. 50 Hz ist daher die Voreinstellung."];
+         "als 60 Hz, übersteuert aber genauso früh. 50 Hz ist daher die Voreinstellung.")];
     _subsonic = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(cx - 3, y - 1, cw + 6, 26) pullsDown:NO];
     for (NSNumber *hz in @[@0, @30, @40, @50, @60, @70]) {
-        [_subsonic addItemWithTitle:hz.intValue ? [NSString stringWithFormat:@"unter %@ Hz ausblenden", hz] : @"Aus"];
+        [_subsonic addItemWithTitle:hz.intValue ? [NSString stringWithFormat:L(@"unter %@ Hz ausblenden"), hz] : L(@"Aus")];
         _subsonic.lastItem.representedObject = hz;
     }
     _subsonic.target = self;
@@ -391,12 +400,12 @@ static double ScalePos(double vu) {
     [_soundPane addSubview:_subsonic];
     y += row;
 
-    [self heading:@"Maximalpegel" frame:NSMakeRect(lx, y + 3, 140, 18) in:_soundPane info:
-        @"Obergrenze für das Bass-Signal. Lautere Stellen regelt ein Begrenzer weich ab, statt sie verzerren zu lassen – "
+    [self heading:L(@"Maximalpegel") frame:NSMakeRect(lx, y + 3, 140, 18) in:_soundPane info:
+        L(@"Obergrenze für das Bass-Signal. Lautere Stellen regelt ein Begrenzer weich ab, statt sie verzerren zu lassen – "
          "dann leuchtet LIMIT im Messgerät.\n\n"
          "Gemessen übersteuert der BassJump ab etwa -10 dB: Darüber wird er nicht mehr lauter, sondern kracht nur. "
          "-12 dB lässt etwas Reserve. Kracht es trotzdem, weiter senken. Leuchtet LIMIT ständig, "
-         "ist die BassJump-Lautstärke zu hoch eingestellt."];
+         "ist die BassJump-Lautstärke zu hoch eingestellt.")];
     _maxLevel = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(cx - 3, y - 1, cw + 6, 26) pullsDown:NO];
     for (NSNumber *db in MaxLevelChoices()) {
         [_maxLevel addItemWithTitle:MaxLevelTitle(db)];
@@ -408,46 +417,50 @@ static double ScalePos(double vu) {
 }
 
 - (void)buildSettingsPane {
-    [self heading:@"BassJump spielt mit bei:" frame:NSMakeRect(24, 4, 200, 18) in:_settingsPane info:
-        @"Der Bass wird nur zugeschaltet, wenn der Ton über eines dieser Geräte läuft – zum Beispiel MacBook-Lautsprecher "
-         "und Monitor, aber nicht Kopfhörer oder AirPods. „Immer“ schaltet ihn bei jeder Ausgabe zu."];
+    [self heading:L(@"BassJump spielt mit bei:") frame:NSMakeRect(24, 4, 200, 18) in:_settingsPane info:
+        L(@"Der Bass wird nur zugeschaltet, wenn der Ton über eines dieser Geräte läuft – zum Beispiel MacBook-Lautsprecher "
+         "und Monitor, aber nicht Kopfhörer oder AirPods. „Immer“ schaltet ihn bei jeder Ausgabe zu.")];
     _gateBox = [[FlippedView alloc] initWithFrame:NSMakeRect(24, 28, 200, 180)];
     [_settingsPane addSubview:_gateBox];
 
     CGFloat x = 240, w = kWidth - x - 20;
-    _idle = [self checkbox:@"Ruhemodus bei Stille" frame:NSMakeRect(x, 2, w - 20, 22) action:@selector(toggleIdle:)];
-    _login = [self checkbox:@"Beim Anmelden starten" frame:NSMakeRect(x, 28, w - 20, 22) action:@selector(toggleLogin:)];
-    _guard = [self checkbox:@"Nur als Subwoofer nutzen" frame:NSMakeRect(x, 54, w - 20, 22) action:@selector(toggleGuard:)];
+    _idle = [self checkbox:L(@"Ruhemodus bei Stille") frame:NSMakeRect(x, 2, w - 20, 22) action:@selector(toggleIdle:)];
+    _login = [self checkbox:L(@"Beim Anmelden starten") frame:NSMakeRect(x, 28, w - 20, 22) action:@selector(toggleLogin:)];
+    _guard = [self checkbox:L(@"Nur als Subwoofer nutzen") frame:NSMakeRect(x, 54, w - 20, 22) action:@selector(toggleGuard:)];
+    _updates = [self checkbox:L(@"Nach Updates suchen") frame:NSMakeRect(x, 80, w - 20, 22) action:@selector(toggleUpdates:)];
     [_settingsPane addSubview:_idle];
     [_settingsPane addSubview:_login];
     [_settingsPane addSubview:_guard];
-    [self addInfo:@"Nach 10 Sekunden Stille gibt JumpBass den BassJump frei und schaltet ihn stumm. Die Lautsprecher spielen dann "
+    [_settingsPane addSubview:_updates];
+    [self addInfo:L(@"Nach 10 Sekunden Stille gibt JumpBass den BassJump frei und schaltet ihn stumm. Die Lautsprecher spielen dann "
                    "direkt, ohne Umweg über JumpBass, und der Mac rechnet nichts. Der BassJump kann so selbst in seinen Standby gehen.\n\n"
                    "Am Klang ändert das nichts: Ein Rauschen des BassJump war in der Messung auch ohne Ruhemodus nicht hörbar. "
                    "Sobald wieder Ton kommt, schaltet sich der Bass automatisch zu – die ersten Sekundenbruchteile noch ohne Bass. "
-                   "Stört das, den Ruhemodus ausschalten." after:_idle];
-    [self addInfo:@"Startet JumpBass automatisch, sobald du dich am Mac anmeldest." after:_login];
-    [self addInfo:@"Der BassJump meldet sich bei macOS zusätzlich als Mikrofon und Lautsprecher („BassJump Core“). "
+                   "Stört das, den Ruhemodus ausschalten.") after:_idle];
+    [self addInfo:L(@"Startet JumpBass automatisch, sobald du dich am Mac anmeldest.") after:_login];
+    [self addInfo:L(@"Der BassJump meldet sich bei macOS zusätzlich als Mikrofon und Lautsprecher („BassJump Core“). "
                    "Entfernen lässt sich das ohne Treiber nicht.\n\n"
                    "Ist diese Option an, wählt JumpBass sofort das vorherige Mikrofon bzw. die vorherige Ausgabe zurück, "
-                   "wenn macOS den BassJump dafür auswählt – Diktat, Siri, Anrufe und Hinweistöne laufen dann nicht über ihn." after:_guard];
+                   "wenn macOS den BassJump dafür auswählt – Diktat, Siri, Anrufe und Hinweistöne laufen dann nicht über ihn.") after:_guard];
+    [self addInfo:L(@"Fragt einmal am Tag bei GitHub nach, ob es eine neue Version gibt, und zeigt sie dann im Fenster und im Menü an. "
+                   "Dabei werden keine Daten über dich oder deinen Mac übertragen. Installiert wird nichts automatisch.") after:_updates];
 
-    [self heading:@"BassJump-Gerät" frame:NSMakeRect(x, 90, w, 18) in:_settingsPane info:
-        @"Welches Gerät als Subwoofer dient. „Automatisch erkennen“ findet den BassJump an seinem Namen bzw. seiner USB-Kennung."];
-    _device = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(x - 3, 112, w + 6, 26) pullsDown:NO];
+    [self heading:L(@"BassJump-Gerät") frame:NSMakeRect(x, 116, w, 18) in:_settingsPane info:
+        L(@"Welches Gerät als Subwoofer dient. „Automatisch erkennen“ findet den BassJump an seinem Namen bzw. seiner USB-Kennung.")];
+    _device = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(x - 3, 138, w + 6, 26) pullsDown:NO];
     _device.target = self;
     _device.action = @selector(chooseDevice:);
     [_settingsPane addSubview:_device];
 
-    [self heading:@"Lautstärkeregler in" frame:NSMakeRect(x, 150, w, 18) in:_settingsPane info:
-        @"Ob der BassJump-Regler in Prozent (100 % = normal) oder in Dezibel angezeigt wird. Am Klang ändert das nichts."];
-    _levelStyle = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(x - 3, 172, w + 6, 26) pullsDown:NO];
-    [_levelStyle addItemsWithTitles:@[@"Prozent (100 % = normal)", @"Dezibel (Bass-Pegel)"]];
+    [self heading:L(@"Lautstärkeregler in") frame:NSMakeRect(x, 172, w, 18) in:_settingsPane info:
+        L(@"Ob der BassJump-Regler in Prozent (100 % = normal) oder in Dezibel angezeigt wird. Am Klang ändert das nichts.")];
+    _levelStyle = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(x - 3, 194, w + 6, 26) pullsDown:NO];
+    [_levelStyle addItemsWithTitles:@[L(@"Prozent (100 % = normal)"), L(@"Dezibel (Bass-Pegel)")]];
     _levelStyle.target = self;
     _levelStyle.action = @selector(chooseLevelStyle:);
     [_settingsPane addSubview:_levelStyle];
 
-    NSButton *uninstall = [NSButton buttonWithTitle:@"Deinstallieren …" target:_app action:@selector(uninstall:)];
+    NSButton *uninstall = [NSButton buttonWithTitle:L(@"Deinstallieren …") target:_app action:@selector(uninstall:)];
     uninstall.frame = NSMakeRect(20, 202, 150, 28);
     [_settingsPane addSubview:uninstall];
 }
@@ -530,6 +543,10 @@ static double ScalePos(double vu) {
     _login.state = [_app launchAtLogin];
     _idle.enabled = [_app usesSystemTap];
     _guard.state = [_app guardDefaultsEnabled];
+    _updates.state = [_app checkUpdatesEnabled];
+    NSString *update = [_app availableUpdate];
+    _update.hidden = update == nil;
+    if (update) _update.title = [NSString stringWithFormat:L(@"Version %@ verfügbar"), update];
 
     [self refreshDevices];
 }
@@ -552,7 +569,7 @@ static double ScalePos(double vu) {
 
     for (NSView *v in [_gateBox.subviews copy]) [v removeFromSuperview];
     CGFloat y = 0;
-    NSButton *always = [self checkbox:@"Immer (jede Ausgabe)" frame:NSMakeRect(0, y, 200, 22) action:@selector(toggleGate:)];
+    NSButton *always = [self checkbox:L(@"Immer (jede Ausgabe)") frame:NSMakeRect(0, y, 200, 22) action:@selector(toggleGate:)];
     always.identifier = kGateAlways;
     always.state = [gates containsObject:kGateAlways];
     [_gateBox addSubview:always];
@@ -568,7 +585,7 @@ static double ScalePos(double vu) {
     }
 
     [_device removeAllItems];
-    [_device addItemWithTitle:@"Automatisch erkennen"];
+    [_device addItemWithTitle:L(@"Automatisch erkennen")];
     [_device itemAtIndex:0].representedObject = nil;
     [_device selectItemAtIndex:0];
     for (NSNumber *n in outputs) {
@@ -611,19 +628,19 @@ static double ScalePos(double vu) {
         [self->_presets.menu addItem:item];
     }];
     [_presets.menu addItem:[NSMenuItem separatorItem]];
-    NSMenuItem *custom = [[NSMenuItem alloc] initWithTitle:@"Eigene Einstellung" action:nil keyEquivalent:@""];
+    NSMenuItem *custom = [[NSMenuItem alloc] initWithTitle:L(@"Eigene Einstellung") action:nil keyEquivalent:@""];
     custom.enabled = NO;
     [_presets.menu addItem:custom];
 }
 
 - (void)savePreset:(id)sender {
     NSAlert *alert = [[NSAlert alloc] init];
-    alert.messageText = @"Preset speichern";
-    alert.informativeText = @"Speichert Lautstärke, Übergangsfrequenz, Bass-Timing, Tiefbass-Schutz und Maximalpegel. Ein vorhandenes Preset mit gleichem Namen wird ersetzt.";
-    [alert addButtonWithTitle:@"Speichern"];
-    [alert addButtonWithTitle:@"Abbrechen"];
+    alert.messageText = L(@"Preset speichern");
+    alert.informativeText = L(@"Speichert Lautstärke, Übergangsfrequenz, Bass-Timing, Tiefbass-Schutz und Maximalpegel. Ein vorhandenes Preset mit gleichem Namen wird ersetzt.");
+    [alert addButtonWithTitle:L(@"Speichern")];
+    [alert addButtonWithTitle:L(@"Abbrechen")];
     NSTextField *field = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 240, 24)];
-    field.placeholderString = @"Name, z. B. Abends Film";
+    field.placeholderString = L(@"Name, z. B. Abends Film");
     NSInteger current = [_app currentPresetIndex];
     if (current >= 0 && [_app.presets[current][@"user"] boolValue]) field.stringValue = _app.presets[current][@"name"];
     alert.accessoryView = field;
@@ -672,6 +689,7 @@ static double ScalePos(double vu) {
 
 - (void)toggleGate:(NSButton *)sender { [_app toggleGateUID:sender.identifier]; [self refresh]; }
 - (void)toggleGuard:(NSButton *)sender { [_app setGuardDefaults:sender.state == NSControlStateValueOn]; }
+- (void)toggleUpdates:(NSButton *)sender { [_app setCheckUpdates:sender.state == NSControlStateValueOn]; [self refresh]; }
 - (void)toggleIdle:(NSButton *)sender { [_app setIdleStandby:sender.state == NSControlStateValueOn]; }
 - (void)toggleLogin:(NSButton *)sender { [_app setLaunchAtLogin:sender.state == NSControlStateValueOn]; [self refresh]; }
 - (void)chooseLevelStyle:(NSPopUpButton *)sender { [_app setLevelStyleDB:sender.indexOfSelectedItem == 1]; [self refresh]; }
