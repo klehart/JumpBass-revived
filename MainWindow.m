@@ -6,7 +6,7 @@
 #import "JumpBassRevived.h"
 #include <math.h>
 
-static const CGFloat kWidth = 460, kHeight = 596;
+static const CGFloat kWidth = 460, kHeight = 626;
 
 static NSColor *Accent(void) { return [NSColor colorWithCalibratedRed:1.0 green:0.55 blue:0.12 alpha:1.0]; }
 
@@ -148,6 +148,7 @@ static double ScalePos(double vu) {
     VUMeterView *_meter;
     NSSegmentedControl *_tabs;
     NSView *_soundPane, *_settingsPane, *_calPane;
+    NSWindow *_calSheet;
     Calibrator *_calibrator;
     NSButton *_calTiming, *_calMax, *_calVolume, *_calStart, *_calReset;
     NSProgressIndicator *_calProgress;
@@ -312,7 +313,7 @@ static double ScalePos(double vu) {
     _meter = [[VUMeterView alloc] initWithFrame:NSMakeRect(24, 92, kWidth - 48, 170)];
     [root addSubview:_meter];
 
-    _tabs = [NSSegmentedControl segmentedControlWithLabels:@[L(@"Klang"), L(@"Einstellungen"), L(@"Kalibrieren")] trackingMode:NSSegmentSwitchTrackingSelectOne target:self action:@selector(switchTab:)];
+    _tabs = [NSSegmentedControl segmentedControlWithLabels:@[L(@"Klang"), L(@"Einstellungen")] trackingMode:NSSegmentSwitchTrackingSelectOne target:self action:@selector(switchTab:)];
     // BassJump-Lautstärke, wie im Original direkt unter der Anzeige
     NSImageView *quiet = [self symbol:@"speaker.fill" fallback:@"–" frame:NSMakeRect(24, 276, 22, 22)];
     NSImageView *loud = [self symbol:@"speaker.wave.3.fill" fallback:@"+" frame:NSMakeRect(kWidth - 24 - 86 - 30, 276, 26, 22)];
@@ -327,21 +328,19 @@ static double ScalePos(double vu) {
                    "auch deren Lautstärke. Hohe Werte bringen den Bass schnell an den Maximalpegel; dann leuchtet LIMIT "
                    "im Messgerät und laute Stellen werden abgeregelt.")];
 
-    _tabs.frame = NSMakeRect((kWidth - 360) / 2, 316, 360, 24);
+    _tabs.frame = NSMakeRect((kWidth - 260) / 2, 316, 260, 24);
     _tabs.selectedSegment = 0;
     [root addSubview:_tabs];
 
     NSRect paneFrame = NSMakeRect(0, 354, kWidth, kHeight - 354);
     _soundPane = [[FlippedView alloc] initWithFrame:paneFrame];
     _settingsPane = [[FlippedView alloc] initWithFrame:paneFrame];
-    _calPane = [[FlippedView alloc] initWithFrame:paneFrame];
-    _settingsPane.hidden = _calPane.hidden = YES;
+    _settingsPane.hidden = YES;
     [root addSubview:_soundPane];
     [root addSubview:_settingsPane];
-    [root addSubview:_calPane];
     [self buildSoundPane];
     [self buildSettingsPane];
-    [self buildCalibrationPane];
+    [self buildCalibrationSheet];
 
     [_window center];
 }
@@ -467,12 +466,34 @@ static double ScalePos(double vu) {
     _levelStyle.action = @selector(chooseLevelStyle:);
     [_settingsPane addSubview:_levelStyle];
 
+    NSButton *calibrate = [NSButton buttonWithTitle:L(@"Kalibrieren …") target:self action:@selector(showCalibration:)];
+    calibrate.frame = NSMakeRect(20, 230, 150, 28);
+    [_settingsPane addSubview:calibrate];
+    [self addInfoAt:NSMakePoint(176, 236) in:_settingsPane text:L(@"Misst mit dem Mikrofon des Macs Bass-Timing, Maximalpegel und bei Monitoren die Lautstärkekurve und stellt die Werte passend ein.")];
     NSButton *uninstall = [NSButton buttonWithTitle:L(@"Deinstallieren …") target:_app action:@selector(uninstall:)];
-    uninstall.frame = NSMakeRect(20, 202, 150, 28);
+    uninstall.frame = NSMakeRect(kWidth - 20 - 150, 230, 150, 28);
     [_settingsPane addSubview:uninstall];
 }
 
-- (void)buildCalibrationPane {
+// Kleines Fenster (Sheet) über dem Hauptfenster
+- (void)buildCalibrationSheet {
+    _calSheet = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, kWidth, 286) styleMask:NSWindowStyleMaskTitled
+                                              backing:NSBackingStoreBuffered defer:YES];
+    _calSheet.title = L(@"Kalibrieren");
+    _calSheet.appearance = _window.appearance;
+    NSVisualEffectView *bg = [[NSVisualEffectView alloc] initWithFrame:NSMakeRect(0, 0, kWidth, 286)];
+    if (@available(macOS 10.14, *)) bg.material = NSVisualEffectMaterialHUDWindow;
+    bg.state = NSVisualEffectStateActive;
+    _calSheet.contentView = bg;
+    FlippedView *content = [[FlippedView alloc] initWithFrame:bg.bounds];
+    [bg addSubview:content];
+    _calPane = [[FlippedView alloc] initWithFrame:NSMakeRect(0, 20, kWidth, 230)];
+    [content addSubview:_calPane];
+    NSButton *close = [NSButton buttonWithTitle:L(@"Schließen") target:self action:@selector(closeCalibration:)];
+    close.keyEquivalent = @"\e";
+    close.frame = NSMakeRect(kWidth - 24 - 110, 244, 116, 30);
+    [content addSubview:close];
+
     CGFloat x = 24, w = kWidth - 48;
     _calIntro = [NSTextField wrappingLabelWithString:@""];
     _calIntro.font = [NSFont systemFontOfSize:12];
@@ -578,6 +599,16 @@ static double ScalePos(double vu) {
     [self refreshCalibration];
 }
 
+- (void)showCalibration:(id)sender {
+    [self refreshCalibration];
+    if (!_calSheet.sheetParent) [_window beginSheet:_calSheet completionHandler:nil];
+}
+
+- (void)closeCalibration:(id)sender {
+    [_calibrator cancel];
+    [_window endSheet:_calSheet];
+}
+
 - (void)resetCalibration:(id)sender {
     [_app resetCalibration];
     _calStatus.stringValue = L(@"Auf Standardwerte zurückgesetzt.");
@@ -601,9 +632,10 @@ static double ScalePos(double vu) {
 
 // Diagnose: JUMPBASS_SNAPSHOT=/pfad.png speichert ein Bild des Fensters
 - (void)snapshot:(NSString *)path tab:(NSInteger)tab {
-    _tabs.selectedSegment = tab;
+    _tabs.selectedSegment = MIN(tab, 1);
     [self switchTab:_tabs];
-    NSView *v = _window.contentView;
+    if (tab == 2) [self refreshCalibration];
+    NSView *v = tab == 2 ? _calSheet.contentView : _window.contentView;
     NSBitmapImageRep *rep = [v bitmapImageRepForCachingDisplayInRect:v.bounds];
     [v cacheDisplayInRect:v.bounds toBitmapImageRep:rep];
     [[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:path atomically:YES];
@@ -727,7 +759,6 @@ static double ScalePos(double vu) {
 - (void)switchTab:(NSSegmentedControl *)sender {
     _soundPane.hidden = sender.selectedSegment != 0;
     _settingsPane.hidden = sender.selectedSegment != 1;
-    _calPane.hidden = sender.selectedSegment != 2;
 }
 
 - (void)choosePreset:(NSPopUpButton *)sender {

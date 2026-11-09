@@ -123,3 +123,6 @@
 "Lautstärkekurve: %.0f %% …" = "Volume curve: %.0f %% …";
 "Die Monitor-Lautstärke ließ sich nicht verstellen. Prüfe, ob MonitorControl läuft und JumpBass unter Bedienungshilfen freigegeben ist." = "The display volume could not be changed. Check that MonitorControl is running and JumpBass is allowed under Accessibility.";
 "Die Lautstärkekurve ließ sich nicht sicher messen. Bitte im Raum still sein und erneut versuchen." = "The volume curve could not be measured reliably. Please keep the room quiet and try again.";
+"Kalibrieren …" = "Calibrate …";
+"Schließen" = "Close";
+"Misst mit dem Mikrofon des Macs Bass-Timing, Maximalpegel und bei Monitoren die Lautstärkekurve und stellt die Werte passend ein." = "Uses the Mac's microphone to measure bass timing, maximum level and, for displays, the volume curve, and sets the values to match.";
