@@ -1,5 +1,5 @@
 // Kalibrierung mit dem Mikrofon des Macs: misst das Bass-Timing, die Übersteuerungsgrenze des BassJump und bei
-// Monitoren, die MonitorControl regelt, deren Lautstärkekurve. Die laufende Audio-Engine spielt die Testsignale
+// externen Monitoren mit eigener Lautstärke deren Lautstärkekurve. Die laufende Audio-Engine spielt die Testsignale
 // statt des Systemtons ab; Aufnahme und Auswertung laufen auf einem eigenen Thread.
 
 #import "JumpBassRevived.h"
@@ -408,7 +408,7 @@ static double HighBandRMS(NSData *data, double rate) {
     return YES;
 }
 
-#pragma mark Lautstärkekurve (MonitorControl)
+#pragma mark Lautstärkekurve (externe Monitore)
 
 static void PostVolumeKey(BOOL up) {
     int key = up ? 0 : 1;   // NX_KEYTYPE_SOUND_UP / NX_KEYTYPE_SOUND_DOWN
@@ -421,15 +421,15 @@ static void PostVolumeKey(BOOL up) {
     }
 }
 
-- (float)monitorVolume { __block float v; dispatch_sync(dispatch_get_main_queue(), ^{ v = [self->_app monitorControlVolume]; }); return v; }
+- (float)monitorVolume { __block float v; dispatch_sync(dispatch_get_main_queue(), ^{ v = [self->_app monitorVolume]; }); return v; }
 
 - (float)pressVolume:(BOOL)up times:(int)n {
     for (int i = 0; i < n; i++) { dispatch_sync(dispatch_get_main_queue(), ^{ PostVolumeKey(up); }); usleep(80000); }
-    usleep(1200000);   // MonitorControl schreibt den Wert verzögert
+    usleep(1200000);   // bis der Monitor umgestellt und der neue Wert gelesen ist
     return [self monitorVolume];
 }
 
-// Die Lautstärketasten verstellen den Monitor über MonitorControl; ein leiser 1-kHz-Ton auf den Lautsprechern
+// Die Lautstärketasten verstellen den Monitor über die Monitor-App (MonitorControl, BetterDisplay …); ein leiser 1-kHz-Ton auf den Lautsprechern
 // zeigt, wie stark der Pegel je Schritt steigt. Danach zurück auf die Ausgangslautstärke.
 - (BOOL)measureVolumeInto:(NSMutableDictionary *)result error:(NSString **)error {
     double rate = _mic.rate;
@@ -456,7 +456,7 @@ static void PostVolumeKey(BOOL up) {
     if (pressed) [self pressVolume:NO times:pressed];
     if ([self cancelled]) return NO;
     if (points.count < 3) {
-        *error = L(@"Die Monitor-Lautstärke ließ sich nicht verstellen. Prüfe, ob MonitorControl läuft und JumpBass unter Bedienungshilfen freigegeben ist.");
+        *error = L(@"Die Monitor-Lautstärke ließ sich nicht verstellen. Prüfe, ob eine App wie MonitorControl, BetterDisplay oder Lunar die Lautstärketasten an den Monitor weitergibt und JumpBass unter Bedienungshilfen freigegeben ist.");
         return NO;
     }
     // Steigung dB je Lautstärke 0…1 (lineare Regression)

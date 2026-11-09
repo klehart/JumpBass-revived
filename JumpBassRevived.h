@@ -88,7 +88,7 @@ BOOL LooksLikeBassJump(AudioObjectID dev);
 
 // Kalibrierung
 - (NSString *)currentOutputName;
-- (float)monitorControlVolume;          // 0…1 bei Monitoren, die MonitorControl regelt, sonst -1
+- (float)monitorVolume;                 // 0…1 bei Monitoren mit eigener, lesbarer Lautstärke, sonst -1
 - (NSDictionary *)calibrationForCurrentOutput;  // date, offsetMs, timingSpreadMs, clipDB, maxLevelDB, volumeSlope
 - (void)applyCalibration:(NSDictionary *)result;
 - (void)resetCalibration;
@@ -97,6 +97,13 @@ BOOL LooksLikeBassJump(AudioObjectID dev);
 - (BOOL)testPlaying;
 - (double)outputSampleRate;
 - (AudioObjectID)measurementMicrophone;
+@end
+
+// Lautstärke eines externen Monitors per DDC (nur Apple Silicon), im Hintergrund zweimal pro Sekunde gelesen
+@interface DDCVolume : NSObject
++ (BOOL)supported;
+- (void)watchDisplayNamed:(NSString *)name;   // nil = nicht mehr abfragen
+- (BOOL)volume:(float *)volume muted:(BOOL *)muted forDisplayNamed:(NSString *)name; // NO = kein aktueller Wert
 @end
 
 @interface Calibrator : NSObject

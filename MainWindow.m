@@ -324,9 +324,10 @@ static double ScalePos(double vu) {
     _levelValue = [self label:@"" size:13 weight:NSFontWeightMedium frame:NSMakeRect(kWidth - 24 - 78, 278, 62, 18)];
     [root addSubview:_levelValue];
     [self addInfoAt:NSMakePoint(kWidth - 24 - 16, 279) in:root text:L(@"BassJump-Lautstärke im Verhältnis zu den Lautsprechern: 100 % = ausgewogen, 200 % = +24 dB.\n\n"
-                   "Sie folgt automatisch der Lautstärke des Macs – bei Monitoren, die per MonitorControl geregelt werden, "
-                   "auch deren Lautstärke. Hohe Werte bringen den Bass schnell an den Maximalpegel; dann leuchtet LIMIT "
-                   "im Messgerät und laute Stellen werden abgeregelt.")];
+                   "Sie folgt automatisch der Lautstärke des Macs – bei externen Monitoren auch deren eigener Lautstärke, egal ob "
+                   "über eine App wie MonitorControl, BetterDisplay oder Lunar oder an den Tasten des Monitors verstellt. "
+                   "Jede Ausgabe merkt sich ihren eigenen Wert. Hohe Werte bringen den Bass schnell an den Maximalpegel; "
+                   "dann leuchtet LIMIT im Messgerät und laute Stellen werden abgeregelt.")];
 
     _tabs.frame = NSMakeRect((kWidth - 260) / 2, 316, 260, 24);
     _tabs.selectedSegment = 0;
@@ -515,7 +516,7 @@ static double ScalePos(double vu) {
     [_calPane addSubview:_calVolume];
     [self addInfo:L(@"Misst die Verzögerung zwischen Lautsprechern und BassJump und stellt das Bass-Timing so ein, dass beide gleichzeitig ankommen. Gilt für die aktuelle Ausgabe.") after:_calTiming];
     [self addInfo:L(@"Spielt Tieftöne in steigender Lautstärke auf dem BassJump, bis er hörbar übersteuert, und setzt den Maximalpegel knapp darunter. Dabei wird es kurz laut. Gilt für alle Ausgaben.") after:_calMax];
-    [self addInfo:L(@"Nur bei Monitoren, deren Lautstärke MonitorControl regelt: Verstellt die Lautstärke kurz über die Lautstärketasten und misst, wie stark der Monitor lauter wird, damit der Bass genau mitgeht. Braucht die Freigabe „Bedienungshilfen“.") after:_calVolume];
+    [self addInfo:L(@"Nur bei externen Monitoren mit eigener Lautstärke: Verstellt sie kurz über die Lautstärketasten und misst, wie stark der Monitor lauter wird, damit der Bass genau mitgeht. Dafür muss eine App wie MonitorControl, BetterDisplay oder Lunar die Tasten an den Monitor weitergeben. Braucht die Freigabe „Bedienungshilfen“.") after:_calVolume];
 
     _calStart = [NSButton buttonWithTitle:L(@"Kalibrierung starten") target:self action:@selector(startCalibration:)];
     _calStart.frame = NSMakeRect(x - 6, 104, 190, 30);
@@ -543,7 +544,7 @@ static double ScalePos(double vu) {
 - (void)refreshCalibration {
     NSString *output = [_app currentOutputName] ?: @"–";
     _calIntro.stringValue = [NSString stringWithFormat:L(@"Misst mit dem Mikrofon des Macs, wie der BassJump mit „%@“ zusammenspielt, und stellt die Werte passend ein. Dauert etwa eine halbe Minute, kurz wird es laut. Vorher: Raum still, Mac und BassJump wie beim Hören aufstellen, normale Lautstärke."), output];
-    BOOL monitor = [_app monitorControlVolume] >= 0;
+    BOOL monitor = [_app monitorVolume] >= 0;
     BOOL running = _calibrator.running;
     if (monitor != (_calVolume.tag == 1)) {   // nur beim Wechsel der Ausgabe vorbelegen, nicht die Wahl überschreiben
         _calVolume.tag = monitor;

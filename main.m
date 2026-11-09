@@ -422,9 +422,10 @@ static AudioObjectID FallbackMicrophone(AudioObjectID bassJump) {
     return first;
 }
 
-// Monitore ohne macOS-Lautstärke (DisplayPort/HDMI) regelt z.B. MonitorControl per DDC direkt im Gerät;
-// macOS erfährt davon nichts. MonitorControl merkt sich den Wert unter "value98(<Name><Hersteller><Modell>@<Display-ID>)"
-// (98 = DDC-Lautstärke 0…1, 141 = DDC-Stummschaltung, 2 = stumm, 1 = an). Den lesen wir mit, damit der Bass mitgeht.
+// Monitore ohne macOS-Lautstärke (DisplayPort/HDMI) regeln Apps wie MonitorControl, BetterDisplay oder Lunar per DDC
+// direkt im Gerät; macOS erfährt davon nichts. Wir fragen den Wert selbst per DDC ab (DDC.m). Klappt das nicht
+// (Intel-Mac, Dock ohne DDC), lesen wir ihn aus MonitorControl: "value98(<Name><Hersteller><Modell>@<Display-ID>)"
+// (98 = DDC-Lautstärke 0…1, 141 = DDC-Stummschaltung, 2 = stumm, 1 = an).
 // Gemessen am LG UltraFine: Der Pegel steigt ziemlich genau um 3 dB je 10 % (in dB, 0 dB = 100 %).
 // Eine Kalibrierung ersetzt die Steigung durch den gemessenen Wert des jeweiligen Monitors.
 static const float kMonitorSlopeDB = 30.0f;
@@ -445,10 +446,16 @@ static NSString *ScreenName(NSScreen *screen) {
 }
 
 static BOOL MonitorControlValue(AudioObjectID dev, float *volume, BOOL *muted);
+static DDCVolume *gDDC;   // fragt die Lautstärke des aktuellen Monitors per DDC ab
 
-static BOOL MonitorControlDB(AudioObjectID dev, float *db) {
+// Lautstärke eines Monitors ohne macOS-Lautstärke: direkt per DDC, sonst aus MonitorControl
+static BOOL ExternalMonitorValue(AudioObjectID dev, float *volume, BOOL *muted) {
+    return [gDDC volume:volume muted:muted forDisplayNamed:DeviceName(dev)] || MonitorControlValue(dev, volume, muted);
+}
+
+static BOOL ExternalMonitorDB(AudioObjectID dev, float *db) {
     float v; BOOL muted;
-    if (!MonitorControlValue(dev, &v, &muted)) return NO;
+    if (!ExternalMonitorValue(dev, &v, &muted)) return NO;
     *db = muted ? -INFINITY : MonitorVolumeDB(v, CalibratedMonitorSlope(dev));
     return YES;
 }
@@ -500,7 +507,7 @@ static float DeviceVolumeDB(AudioObjectID dev) {
         return 40.0f * log10f(scalar);
     }
     float monitor;
-    if (MonitorControlDB(dev, &monitor)) return monitor;
+    if (ExternalMonitorDB(dev, &monitor)) return monitor;
     return 0.0f;
 }
 
@@ -633,6 +640,7 @@ static void SetHardwareSilent(AudioObjectID dev, BOOL silent);
     AudioObjectAddPropertyListenerBlock(kAudioObjectSystemObject, &def, dispatch_get_main_queue(), ^(UInt32 n, const AudioObjectPropertyAddress *a) {
         [weakSelf guardDefaults];
         [weakSelf loadProfile];
+        [weakSelf updateMonitorWatch];
         [weakSelf reconcile];
         [weakSelf updateGain];
     });
@@ -644,6 +652,8 @@ static void SetHardwareSilent(AudioObjectID dev, BOOL silent);
     }
     [self guardDefaults];
     [self loadProfile];
+    gDDC = [[DDCVolume alloc] init];
+    [self updateMonitorWatch];
 
     // Auch bei geöffnetem Menü weiterlaufen (Lautstärke-Nachführung, Ruhemodus)
     self.timer = [NSTimer timerWithTimeInterval:0.25 target:self selector:@selector(tick) userInfo:nil repeats:YES];
@@ -1445,10 +1455,17 @@ static NSArray<NSString *> *ProfileKeys(void) { return @[@"levelDB", @"crossover
 - (AudioObjectID)measurementMicrophone { return FallbackMicrophone([self findBassJump]); }
 - (NSString *)currentOutputName { AudioObjectID out = DefaultOutputDevice(); return out ? DeviceName(out) : nil; }
 
-// Monitor ohne macOS-Lautstärke, den MonitorControl regelt: dessen Lautstärke 0…1, sonst -1
-- (float)monitorControlVolume {
+// Monitor ohne macOS-Lautstärke, dessen eigene Lautstärke lesbar ist: 0…1, sonst -1
+- (float)monitorVolume {
     float v; BOOL muted;
-    return MonitorControlValue(DefaultOutputDevice(), &v, &muted) && !DeviceHasVolume(DefaultOutputDevice()) ? v : -1;
+    AudioObjectID out = DefaultOutputDevice();
+    return !DeviceHasVolume(out) && ExternalMonitorValue(out, &v, &muted) ? v : -1;
+}
+
+// DDC-Abfrage nur für eine Ausgabe ohne macOS-Lautstärke (Monitor über DisplayPort/HDMI/USB-C)
+- (void)updateMonitorWatch {
+    AudioObjectID out = DefaultOutputDevice();
+    [gDDC watchDisplayNamed:out && !LooksLikeBassJump(out) && !DeviceHasVolume(out) ? DeviceName(out) : nil];
 }
 
 - (NSDictionary *)calibrationForCurrentOutput {

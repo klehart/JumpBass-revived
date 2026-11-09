@@ -5,9 +5,9 @@ cd "$(dirname "$0")"
 APP="build/JumpBass Revived.app"
 rm -rf build
 mkdir -p "$APP/Contents/MacOS"
-FLAGS="-fobjc-arc -O2 -Wall -framework Cocoa -framework CoreAudio -framework AudioToolbox -framework AVFoundation -framework Accelerate -weak_framework ServiceManagement"
-clang $FLAGS -arch x86_64 -mmacosx-version-min=10.13 main.m MainWindow.m Calibration.m -o build/x86_64
-clang $FLAGS -arch arm64 -mmacosx-version-min=11.0 main.m MainWindow.m Calibration.m -o build/arm64
+FLAGS="-fobjc-arc -O2 -Wall -framework Cocoa -framework CoreAudio -framework AudioToolbox -framework AVFoundation -framework Accelerate -framework IOKit -weak_framework ServiceManagement"
+clang $FLAGS -arch x86_64 -mmacosx-version-min=10.13 main.m MainWindow.m Calibration.m DDC.m -o build/x86_64
+clang $FLAGS -arch arm64 -mmacosx-version-min=11.0 main.m MainWindow.m Calibration.m DDC.m -o build/arm64
 lipo -create build/x86_64 build/arm64 -output "$APP/Contents/MacOS/JumpBassRevived"
 rm build/x86_64 build/arm64
 cp Info.plist "$APP/Contents/Info.plist"

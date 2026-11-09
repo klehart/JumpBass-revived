@@ -4,7 +4,7 @@ import re, sys, os
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 lit = re.compile(r'L\(@"((?:[^"\\\n]|\\.)*)"((?:\s*"(?:[^"\\\n]|\\.)*")*)\)')
 keys = []
-for f in ('main.m', 'MainWindow.m', 'Calibration.m', 'JumpBassRevived.h'):
+for f in ('main.m', 'MainWindow.m', 'Calibration.m', 'DDC.m', 'JumpBassRevived.h'):
     for m in lit.finditer(open(f).read()):
         k = m.group(1) + ''.join(re.findall(r'"((?:[^"\\\n]|\\.)*)"', m.group(2)))
         if k not in keys: keys.append(k)
