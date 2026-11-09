@@ -23,7 +23,9 @@ static inline double LevelDBFromSlider(double v, BOOL db) {
 }
 static inline NSString *LevelText(double level, BOOL db) {
     if (level <= -30) return @"aus";
-    return db ? [NSString stringWithFormat:@"%+.1f dB", level] : [NSString stringWithFormat:@"%.0f %%", LevelSliderFromDB(level, NO)];
+    if (db) return [NSString stringWithFormat:@"%+.1f dB", level];
+    double pct = LevelSliderFromDB(level, NO);
+    return pct < 0.5 ? @"< 1 %" : [NSString stringWithFormat:@"%.0f %%", pct]; // leise, aber nicht aus
 }
 
 NSArray<NSNumber *> *OutputDevices(void);
@@ -41,6 +43,7 @@ BOOL LooksLikeBassJump(AudioObjectID dev);
 - (BOOL)engineStandby;
 - (BOOL)usesSystemTap;
 - (float)takeMeterPeak;     // Spitzenpegel des Bass-Signals seit dem letzten Aufruf (0…1)
+- (BOOL)limiterActive;      // Begrenzer hat gerade hörbar abgesenkt (Maximalpegel erreicht)
 
 - (NSArray<NSDictionary *> *)presets; // name, values (Einstellungsschlüssel -> Wert), user
 - (NSInteger)currentPresetIndex;      // -1 = keine Übereinstimmung
@@ -57,6 +60,8 @@ BOOL LooksLikeBassJump(AudioObjectID dev);
 - (void)setMaxLevelDB:(double)db;
 - (void)uninstall:(id)sender;
 - (void)setIdleStandby:(BOOL)on;
+- (BOOL)guardDefaultsEnabled;
+- (void)setGuardDefaults:(BOOL)on;  // BassJump nicht als Mikrofon/Standardausgabe zulassen
 - (void)setBassJumpUID:(NSString *)uid; // nil = automatisch
 - (NSArray<NSString *> *)gateUIDs;
 - (void)toggleGateUID:(NSString *)uid;

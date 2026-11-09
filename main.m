@@ -28,10 +28,11 @@ static NSString *const kLaunchAgentLabel = @"io.github.jumpbassrevived";
 static UInt32 kBufferFrames = 128;
 static const CFTimeInterval kIdleSeconds = 10;   // Stille, nach der der BassJump in den Ruhemodus geht
 static const float kSilenceThreshold = 0.0001f;  // -80 dBFS
+static const CFTimeInterval kRetrySeconds = 10;  // erneuter Startversuch nach einem Fehler
 
 #pragma mark - Echtzeit-DSP
 
-#define kRingSize 16384 // Zweierpotenz, reicht für >300 ms Verzögerung
+#define kRingSize 65536 // Zweierpotenz, reicht auch bei 192 kHz für >300 ms Verzögerung
 
 typedef struct {
     double b0, b1, b2, a1, a2;
@@ -41,17 +42,36 @@ typedef struct {
     double x1, x2, y1, y2;
 } BiquadState;
 
+#define kLookaheadRing 2048 // Zweierpotenz, reicht für die Vorausschau des Begrenzers bis 192 kHz
+
+typedef struct {
+    UInt32 lookahead;   // Vorausschau in Frames
+    UInt32 hold;        // Haltezeit der Hüllkurve in Frames
+    float attack;       // Annäherung der Verstärkung pro Frame beim Absenken
+    float release;      // Abklingfaktor der Hüllkurve pro Frame nach der Haltezeit
+} LimiterParams;
+
 typedef struct {
     BiquadCoefs coefs, hpCoefs;               // nur im IOProc gelesen
     BiquadCoefs pendingCoefs, pendingHpCoefs; // vom Main-Thread geschrieben
     int hpOn, pendingHpOn;
-    atomic_int coefsPending;
+    LimiterParams lim, pendingLim;
+    atomic_uint coefsSeq;       // Seqlock: ungerade = Main-Thread schreibt gerade die pending-Werte
+    unsigned appliedSeq;        // zuletzt übernommene Version, nur im IOProc
     BiquadState stage1, stage2; // Linkwitz-Riley 4. Ordnung = 2x Butterworth 2. Ordnung
     BiquadState hpStage;        // Tiefbass-Schutz: Hochpass gegen Frequenzen, die der kleine Treiber nicht schafft
     _Atomic float limitLevel;   // Obergrenze des Begrenzers (linear)
     _Atomic float targetGain;
     float currentGain;
-    float limiterEnv;           // weicher Begrenzer statt hartem Abschneiden
+
+    // Begrenzer mit Vorausschau: Der Bass läuft ein paar Millisekunden verzögert, damit die Verstärkung schon
+    // abgesenkt ist, wenn eine Spitze ankommt. Sofortiges Absenken knickt die Wellenform (hörbar als Knacken),
+    // schnelles Lösen moduliert jede Bass-Schwingung (hörbar als Verzerrung) – beides vermeidet er.
+    float limEnv, limGain;
+    UInt32 limHoldLeft, laPos;
+    float laRing[kLookaheadRing];
+    _Atomic float limMinGain;   // stärkste Absenkung seit der letzten Abfrage (Diagnose, Anzeige)
+
     _Atomic float peak;         // für die Pegelanzeige im Menü
     _Atomic float uiPeak;       // für das VU-Meter im Fenster
     _Atomic float inputPeak;    // Eingangspegel, erkennt Stille für den Ruhemodus
@@ -104,6 +124,14 @@ static inline double BiquadProcess(const BiquadCoefs *c, BiquadState *s, double 
     return y;
 }
 
+// Ausklingende Filterzustände rechtzeitig auf 0 setzen, bevor sie in den langsamen Denormal-Bereich fallen.
+static inline void BiquadFlush(BiquadState *s) {
+    if (fabs(s->x1) < 1e-30) s->x1 = 0;
+    if (fabs(s->x2) < 1e-30) s->x2 = 0;
+    if (fabs(s->y1) < 1e-30) s->y1 = 0;
+    if (fabs(s->y2) < 1e-30) s->y2 = 0;
+}
+
 static OSStatus BassIOProc(AudioObjectID device, const AudioTimeStamp *now,
                            const AudioBufferList *inData, const AudioTimeStamp *inTime,
                            AudioBufferList *outData, const AudioTimeStamp *outTime,
@@ -113,11 +141,23 @@ static OSStatus BassIOProc(AudioObjectID device, const AudioTimeStamp *now,
         atomic_store(&e->ioDelayMs, (AudioConvertHostTimeToNanos(outTime->mHostTime) - (double)AudioConvertHostTimeToNanos(inTime->mHostTime)) / 1e6);
     }
 
-    if (atomic_exchange(&e->coefsPending, 0)) {
-        e->coefs = e->pendingCoefs;
-        e->hpCoefs = e->pendingHpCoefs;
-        e->hpOn = e->pendingHpOn;
+    // Neue Filterwerte nur übernehmen, wenn sie vollständig geschrieben sind; sonst im nächsten Puffer.
+    unsigned seq = atomic_load_explicit(&e->coefsSeq, memory_order_acquire);
+    if (seq != e->appliedSeq && !(seq & 1)) {
+        BiquadCoefs lp = e->pendingCoefs, hp = e->pendingHpCoefs;
+        int hpOn = e->pendingHpOn;
+        LimiterParams lim = e->pendingLim;
+        atomic_thread_fence(memory_order_acquire);
+        if (atomic_load_explicit(&e->coefsSeq, memory_order_relaxed) == seq) {
+            e->coefs = lp;
+            e->hpCoefs = hp;
+            e->hpOn = hpOn;
+            e->lim = lim;
+            e->appliedSeq = seq;
+        }
     }
+    const LimiterParams lim = e->lim;
+    UInt32 lookahead = MIN(lim.lookahead, kLookaheadRing - 1);
     float limit = atomic_load(&e->limitLevel);
     if (!inData || e->inputBuffer >= inData->mNumberBuffers) return noErr;
 
@@ -131,7 +171,7 @@ static OSStatus BassIOProc(AudioObjectID device, const AudioTimeStamp *now,
     // Beide Wege laufen durch Verzögerungsringe, damit sie gleichzeitig am Ohr ankommen.
     float target = atomic_load(&e->targetGain);
     float gain = e->currentGain;
-    float peak = 0.0f, inPeak = 0.0f;
+    float peak = 0.0f, inPeak = 0.0f, minGain = 1.0f;
     UInt32 bassDelay = (UInt32)MIN(MAX(atomic_load(&e->bassDelay), 0), kRingSize - 1);
     UInt32 passDelay = (UInt32)MIN(MAX(atomic_load(&e->passDelay), 0), kRingSize - 1);
     UInt32 bassEnd = MIN(e->bassFirst + e->bassCount, outData->mNumberBuffers);
@@ -146,11 +186,20 @@ static OSStatus BassIOProc(AudioObjectID device, const AudioTimeStamp *now,
         if (e->hpOn) y = BiquadProcess(&e->hpCoefs, &e->hpStage, y);
         gain += (target - gain) * 0.0005f;
         float v = (float)(y * gain);
-        // Weicher Begrenzer: Spitzen über dem Maximalpegel werden sofort abgeregelt und lösen sich in ~50 ms,
-        // statt hart abgeschnitten zu werden (das klingt bei hohem Pegel verzerrt).
+
+        // Hüllkurve hält den Spitzenwert länger als eine Bass-Schwingung und klingt erst danach ab.
         float a = fabsf(v);
-        e->limiterEnv = a > e->limiterEnv ? a : e->limiterEnv * 0.9995f;
-        if (e->limiterEnv > limit) v *= limit / e->limiterEnv;
+        if (a >= e->limEnv) { e->limEnv = a; e->limHoldLeft = lim.hold; }
+        else if (e->limHoldLeft) e->limHoldLeft--;
+        else e->limEnv *= lim.release;
+        float want = e->limEnv > limit ? limit / e->limEnv : 1.0f;
+        e->limGain = want < e->limGain ? e->limGain + (want - e->limGain) * lim.attack : want;
+        minGain = fminf(minGain, e->limGain);
+        UInt32 la = e->laPos++ & (kLookaheadRing - 1);
+        e->laRing[la] = v;
+        v = e->laRing[(la - lookahead) & (kLookaheadRing - 1)] * e->limGain;
+        if (v > limit) v = limit;                 // Reste der Annäherung (<1 %) sicher abfangen
+        else if (v < -limit) v = -limit;
         if (fabsf(v) > peak) peak = fabsf(v);
 
         UInt32 w = e->writePos++ & (kRingSize - 1);
@@ -163,19 +212,23 @@ static OSStatus BassIOProc(AudioObjectID device, const AudioTimeStamp *now,
         for (UInt32 b = e->bassFirst; b < bassEnd; b++) {
             AudioBuffer *out = &outData->mBuffers[b];
             UInt32 ch = out->mNumberChannels;
-            if (!out->mData || i >= out->mDataByteSize / (sizeof(float) * ch)) continue;
+            if (!out->mData || ch == 0 || i >= out->mDataByteSize / (sizeof(float) * ch)) continue;
             float *dst = (float *)out->mData;
             for (UInt32 c = 0; c < ch; c++) dst[i * ch + c] = bass;
         }
         for (UInt32 b = e->passFirst; b < passEnd; b++) {
             AudioBuffer *out = &outData->mBuffers[b];
             UInt32 ch = out->mNumberChannels;
-            if (!out->mData || i >= out->mDataByteSize / (sizeof(float) * ch)) continue;
+            if (!out->mData || ch == 0 || i >= out->mDataByteSize / (sizeof(float) * ch)) continue;
             float *dst = (float *)out->mData;
             for (UInt32 c = 0; c < ch; c++) dst[i * ch + c] = e->passRing[p * 2 + MIN(c, 1)];
         }
     }
     e->currentGain = gain;
+    BiquadFlush(&e->stage1);
+    BiquadFlush(&e->stage2);
+    BiquadFlush(&e->hpStage);
+    if (minGain < atomic_load(&e->limMinGain)) atomic_store(&e->limMinGain, minGain);
     if (peak > atomic_load(&e->peak)) atomic_store(&e->peak, peak);
     if (peak > atomic_load(&e->uiPeak)) atomic_store(&e->uiPeak, peak);
     if (inPeak > atomic_load(&e->inputPeak)) atomic_store(&e->inputPeak, inPeak);
@@ -249,13 +302,20 @@ static AudioObjectID DeviceForUID(NSString *uid) {
     return kAudioObjectUnknown;
 }
 
-static AudioObjectID DefaultOutputDevice(void) {
-    AudioObjectPropertyAddress a = Addr(kAudioHardwarePropertyDefaultOutputDevice, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain);
+static AudioObjectID DefaultDevice(AudioObjectPropertySelector sel) {
+    AudioObjectPropertyAddress a = Addr(sel, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain);
     AudioObjectID dev = kAudioObjectUnknown;
     UInt32 size = sizeof(dev);
     AudioObjectGetPropertyData(kAudioObjectSystemObject, &a, 0, NULL, &size, &dev);
     return dev;
 }
+
+static void SetDefaultDevice(AudioObjectPropertySelector sel, AudioObjectID dev) {
+    AudioObjectPropertyAddress a = Addr(sel, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain);
+    AudioObjectSetPropertyData(kAudioObjectSystemObject, &a, 0, NULL, sizeof(dev), &dev);
+}
+
+static AudioObjectID DefaultOutputDevice(void) { return DefaultDevice(kAudioHardwarePropertyDefaultOutputDevice); }
 
 static Float64 SampleRate(AudioObjectID dev) {
     AudioObjectPropertyAddress a = Addr(kAudioDevicePropertyNominalSampleRate, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain);
@@ -329,6 +389,50 @@ static AudioObjectID BuiltInSpeakers(void) {
     return kAudioObjectUnknown;
 }
 
+// Eingebautes Mikrofon, sonst das erste Mikrofon, das nicht der BassJump ist
+static AudioObjectID FallbackMicrophone(AudioObjectID bassJump) {
+    AudioObjectID first = kAudioObjectUnknown;
+    for (NSNumber *n in InputDevices()) {
+        AudioObjectID dev = n.unsignedIntValue;
+        if (dev == bassJump || LooksLikeBassJump(dev)) continue;
+        if (DeviceUInt32(dev, kAudioDevicePropertyTransportType, kAudioObjectPropertyScopeGlobal) == kAudioDeviceTransportTypeBuiltIn) return dev;
+        if (!first) first = dev;
+    }
+    return first;
+}
+
+// Monitore ohne macOS-Lautstärke (DisplayPort/HDMI) regelt z.B. MonitorControl per DDC direkt im Gerät;
+// macOS erfährt davon nichts. MonitorControl merkt sich den Wert unter "value98(<Name><Hersteller><Modell>@<Display-ID>)"
+// (98 = DDC-Lautstärke 0…1, 141 = DDC-Stummschaltung, 1 = stumm). Den lesen wir mit, damit der Bass mitgeht.
+static float MonitorVolumeCurve(float v) {
+    return v * v; // DDC-Stufen sind grob lautheitslinear, quadratisch kommt dem Gehör am nächsten
+}
+
+static NSString *ScreenName(NSScreen *screen) {
+    if (@available(macOS 10.15, *)) return screen.localizedName;
+    return nil;
+}
+
+static BOOL MonitorControlGain(AudioObjectID dev, float *gain) {
+    NSString *name = DeviceName(dev);
+    for (NSScreen *screen in NSScreen.screens) {
+        if (![ScreenName(screen) isEqualToString:name]) continue;
+        CGDirectDisplayID d = [screen.deviceDescription[@"NSScreenNumber"] unsignedIntValue];
+        NSString *compact = [[name componentsSeparatedByCharactersInSet:NSCharacterSet.whitespaceCharacterSet] componentsJoinedByString:@""];
+        NSString *prefsID = [NSString stringWithFormat:@"(%@%u%u@%u)", compact, CGDisplayVendorNumber(d), CGDisplayModelNumber(d), d];
+        CFStringRef app = CFSTR("app.monitorcontrol.MonitorControl");
+        CFPreferencesAppSynchronize(app);
+        id volume = CFBridgingRelease(CFPreferencesCopyAppValue((__bridge CFStringRef)[@"value98" stringByAppendingString:prefsID], app));
+        id mute = CFBridgingRelease(CFPreferencesCopyAppValue((__bridge CFStringRef)[@"value141" stringByAppendingString:prefsID], app));
+        if (![volume respondsToSelector:@selector(floatValue)]) return NO;
+        float v = MAX(0.0f, MIN(1.0f, [volume floatValue]));
+        BOOL muted = [mute respondsToSelector:@selector(intValue)] && [mute intValue] == 1;
+        *gain = muted ? 0.0f : MonitorVolumeCurve(v);
+        return YES;
+    }
+    return NO;
+}
+
 // Lautstärke des Ausgabegeräts als linearer Faktor (der Tap greift das Signal vor der Gerätelautstärke ab).
 static float DeviceVolumeGain(AudioObjectID dev) {
     for (AudioObjectPropertyElement el = 0; el <= 2; el++) {
@@ -353,7 +457,53 @@ static float DeviceVolumeGain(AudioObjectID dev) {
         }
         return scalar * scalar;
     }
+    float monitor;
+    if (MonitorControlGain(dev, &monitor)) return monitor;
     return 1.0f;
+}
+
+#pragma mark - Menüleisten-Symbol
+
+// Vereinfachtes App-Icon als Vorlagenbild: Gehäuse mit Gitter oben, darüber die drei Schallwellen.
+// Gezeichnet in den Koordinaten von icon/make_icon.m (1024er Raster), nur der Ausschnitt mit dem Motiv.
+static NSImage *StatusIcon(void) {
+    NSImage *img = [NSImage imageWithSize:NSMakeSize(21, 18) flipped:NO drawingHandler:^BOOL(NSRect r) {
+        CGFloat s = 17.0 / 520;                       // Motiv 222…802 x 285…805 -> 17 pt hoch
+        NSAffineTransform *t = [NSAffineTransform transform];
+        [t translateXBy:0.5 yBy:0.5];
+        [t scaleBy:s];
+        [t translateXBy:-222 yBy:-285];
+        [t concat];
+        [[NSColor blackColor] set];
+
+        for (int i = 0; i < 3; i++) {                 // Schallwellen, kräftiger als im großen Icon
+            NSBezierPath *wave = [NSBezierPath bezierPath];
+            [wave appendBezierPathWithArcWithCenter:NSMakePoint(512, 380) radius:275 + i * 62 startAngle:64 - i * 3 endAngle:116 + i * 3];
+            wave.lineWidth = 40;
+            wave.lineCapStyle = NSLineCapStyleRound;
+            [[NSColor colorWithWhite:0 alpha:1.0 - i * 0.25] setStroke];
+            [wave stroke];
+        }
+        CGFloat fl = 222, fr = 802, ft = 520, fb = 285, bl = 268, br = 756, bt = 610;
+        NSBezierPath *top = [NSBezierPath bezierPath];  // Gitter: halbtransparent
+        [top moveToPoint:NSMakePoint(fl, ft)];
+        [top lineToPoint:NSMakePoint(fr, ft)];
+        [top lineToPoint:NSMakePoint(br, bt)];
+        [top lineToPoint:NSMakePoint(bl, bt)];
+        [top closePath];
+        [[NSColor colorWithWhite:0 alpha:0.45] setFill];
+        [top fill];
+        NSBezierPath *front = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(fl, fb, fr - fl, ft - fb - 28) xRadius:60 yRadius:60];
+        [[NSColor blackColor] setFill];
+        [front fill];
+        // Emblem als Aussparung in der Front
+        [[NSGraphicsContext currentContext] setCompositingOperation:NSCompositingOperationClear];
+        [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(512 - 42, 390 - 42, 84, 84)] fill];
+        return YES;
+    }];
+    img.template = YES;
+    img.accessibilityDescription = @"JumpBass";
+    return img;
 }
 
 #pragma mark - App
@@ -365,6 +515,7 @@ static void SetHardwareSilent(AudioObjectID dev, BOOL silent);
 @property (strong) NSString *runningSignature;
 @property (strong) NSString *failedSignature; // verhindert Endlosschleife: eigenes Aggregate löst Geräteliste-Änderung aus
 @property (strong) NSString *statusText;
+@property (strong) NSString *lastOutputUID;   // letzte Ausgabe außer dem BassJump, Ziel für guardDefaults
 @property (strong) NSTimer *timer;
 @property (strong) MainWindowController *window;
 @end
@@ -378,6 +529,8 @@ static void SetHardwareSilent(AudioObjectID dev, BOOL silent);
     AudioObjectID _speakers;
     BOOL _standby;              // Ruhemodus: BassJump freigegeben, ein ungemuteter Tap lauscht auf Ton
     CFAbsoluteTime _lastSound;
+    CFAbsoluteTime _failedAt;
+    CFAbsoluteTime _limitingUntil;  // bis dahin leuchtet die Begrenzer-Anzeige
     double _sampleRate;
     float _meter;
 }
@@ -399,19 +552,11 @@ static void SetHardwareSilent(AudioObjectID dev, BOOL silent);
         @"idleStandby": @YES,
         @"subsonicHz": @40.0,
         @"maxLevelDB": @-3.0,
+        @"guardDefaults": @YES,
     }];
 
     self.statusItem = [[NSStatusBar systemStatusBar] statusItemWithLength:NSVariableStatusItemLength];
-    NSImage *icon = nil;
-    if (@available(macOS 11.0, *)) {
-        icon = [NSImage imageWithSystemSymbolName:@"hifispeaker.fill" accessibilityDescription:@"JumpBass"];
-    }
-    if (icon) {
-        icon.template = YES;
-        self.statusItem.button.image = icon;
-    } else {
-        self.statusItem.button.title = @"BJ";
-    }
+    self.statusItem.button.image = StatusIcon();
     NSMenu *menu = [[NSMenu alloc] init];
     menu.delegate = self;
     self.statusItem.menu = menu;
@@ -419,15 +564,26 @@ static void SetHardwareSilent(AudioObjectID dev, BOOL silent);
     __weak AppDelegate *weakSelf = self;
     AudioObjectPropertyAddress devs = Addr(kAudioHardwarePropertyDevices, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain);
     AudioObjectAddPropertyListenerBlock(kAudioObjectSystemObject, &devs, dispatch_get_main_queue(), ^(UInt32 n, const AudioObjectPropertyAddress *a) {
+        [weakSelf guardDefaults];
         [weakSelf reconcile];
     });
     AudioObjectPropertyAddress def = Addr(kAudioHardwarePropertyDefaultOutputDevice, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain);
     AudioObjectAddPropertyListenerBlock(kAudioObjectSystemObject, &def, dispatch_get_main_queue(), ^(UInt32 n, const AudioObjectPropertyAddress *a) {
+        [weakSelf guardDefaults];
         [weakSelf reconcile];
         [weakSelf updateGain];
     });
+    for (NSNumber *sel in @[@(kAudioHardwarePropertyDefaultInputDevice), @(kAudioHardwarePropertyDefaultSystemOutputDevice)]) {
+        AudioObjectPropertyAddress other = Addr(sel.unsignedIntValue, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain);
+        AudioObjectAddPropertyListenerBlock(kAudioObjectSystemObject, &other, dispatch_get_main_queue(), ^(UInt32 n, const AudioObjectPropertyAddress *a) {
+            [weakSelf guardDefaults];
+        });
+    }
+    [self guardDefaults];
 
-    self.timer = [NSTimer scheduledTimerWithTimeInterval:0.25 target:self selector:@selector(tick) userInfo:nil repeats:YES];
+    // Auch bei geöffnetem Menü weiterlaufen (Lautstärke-Nachführung, Ruhemodus)
+    self.timer = [NSTimer timerWithTimeInterval:0.25 target:self selector:@selector(tick) userInfo:nil repeats:YES];
+    [[NSRunLoop mainRunLoop] addTimer:self.timer forMode:NSRunLoopCommonModes];
     [self reconcile];
 
     NSString *snap = NSProcessInfo.processInfo.environment[@"JUMPBASS_SNAPSHOT"];
@@ -462,13 +618,22 @@ static void SetHardwareSilent(AudioObjectID dev, BOOL silent);
 }
 
 - (void)tick {
+    // Nach einem Startfehler (z.B. Gerät kurz belegt) regelmäßig neu versuchen
+    if (self.failedSignature && CFAbsoluteTimeGetCurrent() - _failedAt > kRetrySeconds) {
+        self.failedSignature = nil;
+        [self reconcile];
+    }
     [self updateGain];
     [self checkIdle];
+    BOOL dim = ![self engineActive];                  // Symbol gedimmt, solange kein Bass läuft
+    if (self.statusItem.button.appearsDisabled != dim) self.statusItem.button.appearsDisabled = dim;
     float p = atomic_exchange(&_engine.peak, 0.0f);
     _meter = MAX(p, _meter * 0.7f);
+    float limGain = atomic_exchange(&_engine.limMinGain, 1.0f);
+    if (limGain < 0.89f) _limitingUntil = CFAbsoluteTimeGetCurrent() + 0.6; // mehr als 1 dB abgesenkt
     if (getenv("JUMPBASS_DEBUG")) {
-        NSLog(@"Pegel %.4f, Gain %.3f, IO-Abstand %.1f ms, Aggregate: Puffer %u, Latenz ein %u/%u aus %u/%u Frames @ %.0f Hz",
-              p, atomic_load(&_engine.targetGain), atomic_load(&_engine.ioDelayMs),
+        NSLog(@"Pegel %.4f, Begrenzer %.1f dB, Gain %.3f, IO-Abstand %.1f ms, Aggregate: Puffer %u, Latenz ein %u/%u aus %u/%u Frames @ %.0f Hz",
+              p, 20 * log10f(fmaxf(limGain, 1e-6f)), atomic_load(&_engine.targetGain), atomic_load(&_engine.ioDelayMs),
               DeviceUInt32(_aggregate, kAudioDevicePropertyBufferFrameSize, kAudioObjectPropertyScopeGlobal),
               DeviceUInt32(_aggregate, kAudioDevicePropertyLatency, kAudioObjectPropertyScopeInput),
               DeviceUInt32(_aggregate, kAudioDevicePropertySafetyOffset, kAudioObjectPropertyScopeInput),
@@ -491,6 +656,29 @@ static void SetHardwareSilent(AudioObjectID dev, BOOL silent);
 }
 
 #pragma mark Konfiguration
+
+// Der BassJump meldet sich bei macOS auch als Mikrofon und Lautsprecher ("BassJump Core"). Neu angesteckte
+// USB-Geräte macht macOS gern zum Standard – dann liefen Diktat, Siri, Anrufe oder Hinweistöne darüber.
+// Ohne Treiber lässt sich der Eingang nicht entfernen, also wählen wir sofort das vorherige Gerät zurück.
+- (void)guardDefaults {
+    AudioObjectID bj = [self findBassJump];
+    AudioObjectID out = DefaultOutputDevice();
+    if (out && out != bj && !IsOwnAggregate(out)) self.lastOutputUID = DeviceUID(out);
+    if (!bj || ![self.defaults boolForKey:@"guardDefaults"]) return;
+
+    AudioObjectID fallback = DeviceForUID(self.lastOutputUID);
+    if (!fallback || fallback == bj) fallback = BuiltInSpeakers();
+    if (fallback && out == bj) SetDefaultDevice(kAudioHardwarePropertyDefaultOutputDevice, fallback);
+    if (fallback && DefaultDevice(kAudioHardwarePropertyDefaultSystemOutputDevice) == bj)
+        SetDefaultDevice(kAudioHardwarePropertyDefaultSystemOutputDevice, fallback);
+    if (DefaultDevice(kAudioHardwarePropertyDefaultInputDevice) == bj) {
+        AudioObjectID mic = FallbackMicrophone(bj);
+        if (mic) SetDefaultDevice(kAudioHardwarePropertyDefaultInputDevice, mic);
+    }
+}
+
+- (BOOL)guardDefaultsEnabled { return [self.defaults boolForKey:@"guardDefaults"]; }
+- (void)setGuardDefaults:(BOOL)on { [self.defaults setBool:on forKey:@"guardDefaults"]; [self guardDefaults]; }
 
 - (AudioObjectID)findBassJump {
     NSString *uid = [self.defaults stringForKey:@"bassJumpUID"];
@@ -566,6 +754,7 @@ static void SetHardwareSilent(AudioObjectID dev, BOOL silent);
         self.statusText = error;
         [self stopEngine];
         self.failedSignature = want;
+        _failedAt = CFAbsoluteTimeGetCurrent();
     } else {
         self.runningSignature = want;
         _lastSound = CFAbsoluteTimeGetCurrent();
@@ -681,6 +870,9 @@ static void SetHardwareSilent(AudioObjectID dev, BOOL silent);
     _engine.coefs = _engine.pendingCoefs;
     _engine.hpCoefs = _engine.pendingHpCoefs;
     _engine.hpOn = _engine.pendingHpOn;
+    _engine.lim = _engine.pendingLim;
+    _engine.appliedSeq = atomic_load(&_engine.coefsSeq);
+    atomic_store(&_engine.limMinGain, 1.0f);
     [self updateLimit];
     atomic_store(&_engine.targetGain, 0.0f);
     [self updateDelay];
@@ -783,6 +975,7 @@ static SInt32 OutputLatency(AudioObjectID dev) {
 - (void)updateDelay {
     SInt32 frames = 0;
     if (_speakers) frames = OutputLatency(_speakers) - OutputLatency(_bassJump);
+    frames -= (SInt32)[self limiterLookahead];   // um die Vorausschau des Begrenzers ist der Bass ohnehin später
     frames += (SInt32)lround([self.defaults doubleForKey:@"bassOffsetMs"] * _sampleRate / 1000.0);
     atomic_store(&_engine.bassDelay, MAX(frames, 0));
     atomic_store(&_engine.passDelay, MAX(-frames, 0));
@@ -791,10 +984,26 @@ static SInt32 OutputLatency(AudioObjectID dev) {
 
 - (void)updateFilter {
     double subsonic = [self.defaults doubleForKey:@"subsonicHz"];
-    _engine.pendingCoefs = LowpassCoefs([self.defaults doubleForKey:@"crossover"], _sampleRate);
+    BiquadCoefs lp = LowpassCoefs([self.defaults doubleForKey:@"crossover"], _sampleRate);
+    BiquadCoefs hp = subsonic > 0 ? HighpassCoefs(subsonic, _sampleRate) : _engine.pendingHpCoefs;
+    LimiterParams lim;
+    lim.lookahead = [self limiterLookahead];
+    lim.hold = (UInt32)lround(0.030 * _sampleRate) + lim.lookahead; // länger als eine halbe 20-Hz-Schwingung
+    lim.attack = 1.0f - expf(-5.0f / MAX(lim.lookahead, 1));          // nach der Vorausschau zu >99 % abgesenkt
+    lim.release = expf(-1.0f / (0.150f * _sampleRate));                 // löst sich in ~150 ms
+    // Seqlock: ungerade Version während des Schreibens, der IOProc übernimmt nur vollständige Sätze.
+    atomic_fetch_add_explicit(&_engine.coefsSeq, 1, memory_order_relaxed);
+    atomic_thread_fence(memory_order_release);
+    _engine.pendingCoefs = lp;
+    _engine.pendingHpCoefs = hp;
     _engine.pendingHpOn = subsonic > 0;
-    if (subsonic > 0) _engine.pendingHpCoefs = HighpassCoefs(subsonic, _sampleRate);
-    atomic_store(&_engine.coefsPending, 1);
+    _engine.pendingLim = lim;
+    atomic_fetch_add_explicit(&_engine.coefsSeq, 1, memory_order_release);
+}
+
+// Vorausschau des Begrenzers: 4 ms
+- (UInt32)limiterLookahead {
+    return (UInt32)MIN(lround(0.004 * _sampleRate), kLookaheadRing - 1);
 }
 
 - (void)updateLimit {
@@ -1039,10 +1248,10 @@ static NSArray<NSString *> *PresetKeys(void) { return @[@"crossover", @"levelDB"
     double (^orig)(double) = ^double(double v) { return 20.0 * log10(v / 0.6); };
     NSArray *raw = @[ @[@"Standard", @150, @(orig(0.6))], @[@"Klassik", @175, @(orig(0.5))], @[@"Pop", @200, @(orig(0.75))],
                       @[@"R&B", @150, @(orig(1.0))], @[@"Rock", @175, @(orig(0.8))],
-                      @[@"Jazz", @120, @-1.0], @[@"Akustik", @100, @-3.0], @[@"Hip-Hop", @120, @6.0],
-                      @[@"Elektronisch", @100, @6.0], @[@"Metal", @200, @3.0], @[@"Film & Serien", @120, @4.0],
-                      @[@"Spiele", @150, @5.0], @[@"Sprache & Podcast", @80, @-6.0], @[@"Nachtmodus", @150, @-9.0],
-                      @[@"Volle Fülle", @250, @4.0], @[@"Maximaler Bass", @200, @10.0] ];
+                      @[@"Jazz", @120, @-1.0], @[@"Akustik", @100, @-3.0], @[@"Hip-Hop", @120, @3.0],
+                      @[@"Elektronisch", @100, @3.0], @[@"Metal", @200, @1.0], @[@"Film & Serien", @120, @2.0],
+                      @[@"Spiele", @150, @2.0], @[@"Sprache & Podcast", @80, @-6.0], @[@"Nachtmodus", @150, @-9.0],
+                      @[@"Volle Fülle", @250, @2.0], @[@"Maximaler Bass", @200, @5.0] ];
     NSMutableArray *r = [NSMutableArray array];
     for (NSArray *p in raw) [r addObject:@{ @"name": p[0], @"values": @{ @"crossover": p[1], @"levelDB": p[2] } }];
     for (NSDictionary *p in [self.defaults arrayForKey:@"userPresets"]) {
@@ -1096,6 +1305,7 @@ static NSArray<NSString *> *PresetKeys(void) { return @[@"crossover", @"levelDB"
 - (BOOL)engineActive { return _aggregate && !_standby; }
 - (BOOL)engineStandby { return _aggregate && _standby; }
 - (float)takeMeterPeak { return atomic_exchange(&_engine.uiPeak, 0.0f); }
+- (BOOL)limiterActive { return [self engineActive] && CFAbsoluteTimeGetCurrent() < _limitingUntil; }
 - (BOOL)usesSystemTap { return [[self sourceUID] isEqualToString:kSourceSystemTap]; }
 
 - (void)setBassEnabled:(BOOL)on { self.failedSignature = nil; [self.defaults setBool:on forKey:@"enabled"]; [self reconcile]; }
@@ -1111,11 +1321,16 @@ static NSArray<NSString *> *PresetKeys(void) { return @[@"crossover", @"levelDB"
 
 - (void)toggleGateUID:(NSString *)uid {
     NSMutableArray *gates = [[self gateUIDs] mutableCopy];
-    [gates removeObject:kGateAlways];
-    if ([uid isEqualToString:kGateAlways]) gates = [@[kGateAlways] mutableCopy];
-    else if ([gates containsObject:uid]) [gates removeObject:uid];
-    else [gates addObject:uid];
-    [self.defaults setObject:gates forKey:@"gateUIDs"];
+    if ([uid isEqualToString:kGateAlways]) {
+        // "Immer" aus: zurück zur Standardauswahl (eingebaute Lautsprecher)
+        if ([gates containsObject:kGateAlways]) [self.defaults removeObjectForKey:@"gateUIDs"];
+        else [self.defaults setObject:@[kGateAlways] forKey:@"gateUIDs"];
+    } else {
+        [gates removeObject:kGateAlways];
+        if ([gates containsObject:uid]) [gates removeObject:uid];
+        else [gates addObject:uid];
+        [self.defaults setObject:gates forKey:@"gateUIDs"];
+    }
     [self reconcile];
     [self updateGain];
 }
@@ -1142,12 +1357,16 @@ static NSArray<NSString *> *PresetKeys(void) { return @[@"crossover", @"levelDB"
 - (void)setBassJumpDevice:(NSMenuItem *)s { [self setBassJumpUID:s.representedObject]; }
 - (void)setSource:(NSMenuItem *)s { [self setDefault:s.representedObject forKey:@"sourceUID"]; }
 - (void)setPassthrough:(NSMenuItem *)s { [self setDefault:s.representedObject forKey:@"passthroughUID"]; }
-- (void)setGate:(NSMenuItem *)s { [self toggleGateUID:s.representedObject]; }
 
 @end
 
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
+        // Für deinstallieren.sh: Anmeldeobjekt (SMAppService) abmelden und sofort beenden
+        if (argc > 1 && strcmp(argv[1], "--unregister-login") == 0) {
+            if (@available(macOS 13.0, *)) [SMAppService.mainAppService unregisterAndReturnError:nil];
+            return 0;
+        }
         NSApplication *app = [NSApplication sharedApplication];
         AppDelegate *delegate = [[AppDelegate alloc] init];
         app.delegate = delegate;
