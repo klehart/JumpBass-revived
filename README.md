@@ -32,13 +32,20 @@ That is exactly what JumpBass Revived does.
 - **Crossover:** Linkwitz-Riley low-pass (24 dB/octave), crossover frequency 40–500 Hz
 - **In sync:** speakers and subwoofer are fed from the same buffer; latency differences between
   the devices are compensated automatically (fine-tuning from −100 to +200 ms)
-- **Volume** in percent or decibels, automatically follows the Mac's volume and mute
+- **Volume** in percent or decibels, automatically follows the Mac's volume and mute – with loudness
+  compensation (the bass is lowered less than the speakers, because hearing loses bass at low volume)
+- **External displays:** for monitors without macOS volume control (DisplayPort/HDMI, e.g. LG UltraFine)
+  the bass follows the volume and mute set in [MonitorControl](https://github.com/MonitorControl/MonitorControl) via DDC
 - **Presets:** 16 built-in ones plus any number of your own, which store all sound settings
 - **Protection against distortion:** sub-bass filter (high-pass for frequencies the small driver
-  cannot reproduce) and a soft limiter with adjustable maximum level
+  cannot reproduce) and a look-ahead limiter whose ceiling is set below the measured clipping point
+  of the BassJump's amplifier; a LIMIT lamp in the VU meter shows when it engages
+- **Subwoofer only:** the BassJump also registers as microphone and speaker ("BassJump Core");
+  JumpBass prevents macOS from making it the default input or output (dictation, Siri, calls, alerts)
 - **Standby:** after 10 s of silence the BassJump is released and muted; playback resumes automatically
 - **Selectable outputs:** e.g. only with the MacBook speakers and the external display, not with headphones
-- **Interface:** window with an analog VU meter, plus quick access from the menu bar
+- **Interface:** window with an analog VU meter and an ⓘ explanation for every setting, plus quick
+  access from the menu bar (icon derived from the app icon, greyed out when inactive)
 - **Universal binary:** Intel and Apple Silicon
 
 ## How it works
@@ -72,7 +79,9 @@ The code consists of two Objective-C files: `main.m` (audio, menu bar, settings)
 | **14.2 Sonoma and later** | No additional software required. System audio is captured with a Core Audio process tap. |
 | **10.13 High Sierra – 14.1** | Requires a virtual loopback device such as the free [BlackHole 2ch](https://github.com/ExistentialAudio/BlackHole). |
 
-Tested with a BassJump 2 on a MacBook Pro (Apple Silicon) running macOS 15 Sequoia.
+Tested with a BassJump 2 on a MacBook Pro (Apple Silicon) running macOS 15 Sequoia, with the MacBook
+speakers and an LG UltraFine display (volume via MonitorControl). The clipping point and the display's
+volume curve were measured acoustically with the MacBook microphone.
 The BlackHole path for older systems is implemented but has not yet been tested on real hardware.
 
 ## Installation
@@ -82,7 +91,7 @@ The BlackHole path for older systems is implemented but has not yet been tested 
    go to *System Settings → Privacy & Security → Open Anyway*.
 3. On first launch, macOS asks for the **Screen & System Audio Recording** permission – please allow it.
    Microphone access is not needed.
-4. Plug in the BassJump. It is detected automatically and a speaker icon appears in the menu bar.
+4. Plug in the BassJump. It is detected automatically and the JumpBass icon appears in the menu bar.
 5. Enable "Beim Anmelden starten" (launch at login) in the window under *Einstellungen* (settings).
 
 ### Building from source
@@ -114,13 +123,14 @@ sudo ./alte-software-entfernen.sh
 
 | Setting (German UI) | Meaning |
 |---|---|
-| Lautstärke (volume) | 100 % = normal, 200 % = +24 dB. Applies on top of the Mac volume and sets the bass/speaker balance. |
+| Lautstärke (volume) | 100 % = normal, 200 % = +24 dB. Applies on top of the device volume and sets the bass/speaker balance. The bass follows the device volume at 0.6 dB per dB. |
 | Übergangsfrequenz (crossover) | The BassJump plays up to this frequency. Default 150 Hz; above ~250 Hz it becomes audible as a separate source. |
 | Bass-Timing | 0 = automatic, based on device latencies. Positive delays the bass, negative delays the speakers. |
-| Tiefbass-Schutz (sub-bass filter) | Removes frequencies below 30–70 Hz that the small driver cannot reproduce. |
+| Tiefbass-Schutz (sub-bass filter) | Removes frequencies below 30–70 Hz that the small driver cannot reproduce. Default 50 Hz: measured, 40 Hz comes out more than 10 dB quieter than 60 Hz but clips just as early. |
 | Maximalpegel (maximum level) | Ceiling of the limiter, default -12 dB. Measured: the BassJump's amplifier clips from about -10 dBFS, so higher levels are not offered. |
 | Ruhemodus (standby) | Releases the BassJump during silence (saves CPU, lets the BassJump enter its own standby; no audible hiss difference was measured). |
 | BassJump spielt mit bei (play with) | Output devices for which the bass is added. |
+| Nur als Subwoofer nutzen (subwoofer only) | Switches the default input/output back if macOS selects the BassJump. |
 
 ## Uninstalling
 
@@ -131,9 +141,11 @@ permissions and moves itself to the Trash. Alternatively: `./deinstallieren.sh`.
 
 - **No bass, level meter stays empty:** check *Privacy & Security → Screen & System Audio Recording*.
 - **BassJump not detected:** select it manually in the window under *BassJump-Gerät* (device).
-- **Faint hiss:** comes from the BassJump's own amplifier; standby mutes it during silence.
-- **Distortion at high volume:** a hardware limit of the small, USB-powered amplifier –
-  lower the maximum level or raise the sub-bass filter.
+- **Distortion at high volume:** a hardware limit of the small, USB-powered amplifier. The default
+  ceiling of -12 dB already stays below it; if it still crackles, lower the maximum level or raise the
+  sub-bass filter. If LIMIT is lit all the time, the BassJump volume is set too high.
+- **Bass does not follow an external display's volume:** the display has no macOS volume control. Use
+  MonitorControl to set its volume; JumpBass reads it from there.
 - **Diagnostics:** `JUMPBASS_DEBUG=1 "/Applications/JumpBass Revived.app/Contents/MacOS/JumpBassRevived"`
   prints status, levels and latencies to the terminal.
 

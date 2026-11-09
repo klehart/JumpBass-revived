@@ -15,18 +15,18 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0</string>
+	<string>1.1</string>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>2</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>10.13</string>
 	<key>LSUIElement</key>
 	<true/>
 	<key>NSAudioCaptureUsageDescription</key>
 	<string>JumpBass Revived liest den Systemton, um die tiefen Frequenzen an den BassJump-Subwoofer zu senden.</string>
-	<key>NSMicrophoneUsageDescription</key>
-	<string>JumpBass Revived liest das Loopback-Gerät, um die tiefen Frequenzen an den BassJump-Subwoofer zu senden.</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>JumpBass Revived liest das Loopback-Gerät, um die tiefen Frequenzen an den BassJump-Subwoofer zu senden.</string>
 </dict>
 </plist>
