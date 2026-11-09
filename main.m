@@ -403,13 +403,10 @@ static AudioObjectID FallbackMicrophone(AudioObjectID bassJump) {
 
 // Monitore ohne macOS-Lautstärke (DisplayPort/HDMI) regelt z.B. MonitorControl per DDC direkt im Gerät;
 // macOS erfährt davon nichts. MonitorControl merkt sich den Wert unter "value98(<Name><Hersteller><Modell>@<Display-ID>)"
-// (98 = DDC-Lautstärke 0…1, 141 = DDC-Stummschaltung, 1 = stumm). Den lesen wir mit, damit der Bass mitgeht.
-// Gemessen am LG UltraFine: Ab 17 % steigt der Pegel ziemlich genau um 3 dB je 10 %, darunter fällt er steil ab
-// (bei 7 % war ein Testton schon nicht mehr messbar). Unterhalb von 17 % daher kubisch auf null.
-static float MonitorVolumeCurve(float v) {
-    if (v <= 0) return 0;
-    float low = fminf(1.0f, v / 0.17f);
-    return powf(10.0f, 1.5f * (v - 1.0f)) * low * low * low;
+// (98 = DDC-Lautstärke 0…1, 141 = DDC-Stummschaltung, 2 = stumm, 1 = an). Den lesen wir mit, damit der Bass mitgeht.
+// Gemessen am LG UltraFine: Der Pegel steigt ziemlich genau um 3 dB je 10 % (in dB, 0 dB = 100 %).
+static float MonitorVolumeDB(float v) {
+    return v < 0.005f ? -INFINITY : 30.0f * (v - 1.0f);
 }
 
 static NSString *ScreenName(NSScreen *screen) {
@@ -417,7 +414,7 @@ static NSString *ScreenName(NSScreen *screen) {
     return nil;
 }
 
-static BOOL MonitorControlGain(AudioObjectID dev, float *gain) {
+static BOOL MonitorControlDB(AudioObjectID dev, float *db) {
     NSString *name = DeviceName(dev);
     for (NSScreen *screen in NSScreen.screens) {
         if (![ScreenName(screen) isEqualToString:name]) continue;
@@ -430,20 +427,25 @@ static BOOL MonitorControlGain(AudioObjectID dev, float *gain) {
         id mute = CFBridgingRelease(CFPreferencesCopyAppValue((__bridge CFStringRef)[@"value141" stringByAppendingString:prefsID], app));
         if (![volume respondsToSelector:@selector(floatValue)]) return NO;
         float v = MAX(0.0f, MIN(1.0f, [volume floatValue]));
-        BOOL muted = [mute respondsToSelector:@selector(intValue)] && [mute intValue] == 1;
-        *gain = muted ? 0.0f : MonitorVolumeCurve(v);
+        BOOL muted = [mute respondsToSelector:@selector(intValue)] && [mute intValue] == 2;
+        *db = muted ? -INFINITY : MonitorVolumeDB(v);
         return YES;
     }
     return NO;
 }
 
-// Lautstärke des Ausgabegeräts als linearer Faktor (der Tap greift das Signal vor der Gerätelautstärke ab).
-static float DeviceVolumeGain(AudioObjectID dev) {
+// Wie stark der Bass der Gerätelautstärke folgt: 0.6 dB je dB. Das Gehör verliert bei leiser Wiedergabe
+// überproportional Bass (Kurven gleicher Lautheit), und die MacBook-Lautsprecher heben leise Pegel per DSP an.
+// Bei voller dB-Kopplung war der Bass schon bei mittlerer Lautstärke kaum noch zu spüren.
+static const float kBassTracking = 0.6f;
+
+// Lautstärke des Ausgabegeräts in dB, -INFINITY = stumm (der Tap greift das Signal vor der Gerätelautstärke ab).
+static float DeviceVolumeDB(AudioObjectID dev) {
     for (AudioObjectPropertyElement el = 0; el <= 2; el++) {
         AudioObjectPropertyAddress mute = Addr(kAudioDevicePropertyMute, kAudioDevicePropertyScopeOutput, el);
         UInt32 m = 0, size = sizeof(m);
         if (AudioObjectHasProperty(dev, &mute) && AudioObjectGetPropertyData(dev, &mute, 0, NULL, &size, &m) == noErr) {
-            if (m) return 0.0f;
+            if (m) return -INFINITY;
             break;
         }
     }
@@ -452,18 +454,21 @@ static float DeviceVolumeGain(AudioObjectID dev) {
         Float32 scalar = 1.0f;
         UInt32 size = sizeof(scalar);
         if (!AudioObjectHasProperty(dev, &vol) || AudioObjectGetPropertyData(dev, &vol, 0, NULL, &size, &scalar) != noErr) continue;
-        if (scalar <= 0.0001f) return 0.0f;
+        if (scalar <= 0.0001f) return -INFINITY;
         AudioObjectPropertyAddress conv = Addr(kAudioDevicePropertyVolumeScalarToDecibels, kAudioDevicePropertyScopeOutput, el);
         Float32 db = scalar;
         size = sizeof(db);
-        if (AudioObjectGetPropertyData(dev, &conv, 0, NULL, &size, &db) == noErr && isfinite(db)) {
-            return powf(10.0f, db / 20.0f);
-        }
-        return scalar * scalar;
+        if (AudioObjectGetPropertyData(dev, &conv, 0, NULL, &size, &db) == noErr && isfinite(db)) return db;
+        return 40.0f * log10f(scalar);
     }
     float monitor;
-    if (MonitorControlGain(dev, &monitor)) return monitor;
-    return 1.0f;
+    if (MonitorControlDB(dev, &monitor)) return monitor;
+    return 0.0f;
+}
+
+static float DeviceVolumeGain(AudioObjectID dev) {
+    float db = DeviceVolumeDB(dev);
+    return isfinite(db) ? powf(10.0f, kBassTracking * db / 20.0f) : 0.0f;
 }
 
 #pragma mark - Menüleisten-Symbol
