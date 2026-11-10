@@ -101,6 +101,31 @@ static void RecorderCallback(void *user, AudioQueueRef q, AudioQueueBufferRef bu
 }
 @end
 
+#pragma mark - Audio-Verarbeitung anstoßen
+
+// Nach dem Start (oder dem Ruhemodus) läuft die Engine erst los, wenn ein anderes Programm etwas abspielt –
+// den eigenen Ton nimmt der Systemton-Tap absichtlich nicht auf. Ohne Musik spielt afplay deshalb eine halbe
+// Sekunde Stille ab; danach läuft die Engine weiter, auch wenn wieder nichts spielt.
+static void KickEngine(void) {
+    NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:@"jumpbass-stille.wav"];
+    if (![[NSFileManager defaultManager] fileExistsAtPath:path]) {
+        UInt32 frames = 24000, dataSize = frames * 2;
+        NSMutableData *wav = [NSMutableData dataWithLength:44 + dataSize];
+        uint8_t *h = wav.mutableBytes;
+        UInt32 riff = 36 + dataSize, fmtSize = 16, rate = 48000, byteRate = 96000;
+        UInt16 pcm = 1, channels = 1, align = 2, bits = 16;
+        memcpy(h, "RIFF", 4); memcpy(h + 4, &riff, 4); memcpy(h + 8, "WAVEfmt ", 8);
+        memcpy(h + 16, &fmtSize, 4); memcpy(h + 20, &pcm, 2); memcpy(h + 22, &channels, 2); memcpy(h + 24, &rate, 4);
+        memcpy(h + 28, &byteRate, 4); memcpy(h + 32, &align, 2); memcpy(h + 34, &bits, 2);
+        memcpy(h + 36, "data", 4); memcpy(h + 40, &dataSize, 4);
+        [wav writeToFile:path atomically:YES];
+    }
+    NSTask *task = [[NSTask alloc] init];
+    task.launchPath = @"/usr/bin/afplay";
+    task.arguments = @[path];
+    @try { [task launch]; [task waitUntilExit]; } @catch (NSException *e) {}
+}
+
 #pragma mark - Testsignale und Auswertung
 
 // Linearer Sweep von f0 nach f1 mit weichen Rändern (je 10 % Hann), eingebettet ab Sekunde at
@@ -203,6 +228,11 @@ static double HighBandRMS(NSData *data, double rate) {
     double _outRate;
     atomic_bool _cancel;
     void (^_progress)(NSString *, double);
+    NSString *_failure;         // Grund, warum das letzte Testsignal nicht aufgenommen werden konnte
+}
+
+- (NSString *)interrupted {
+    return [self cancelled] ? nil : [NSString stringWithFormat:L(@"Die Messung wurde unterbrochen (%@)."), _failure ?: @"?"];
 }
 
 - (instancetype)initWithApp:(AppDelegate *)app {
@@ -265,7 +295,11 @@ static double HighBandRMS(NSData *data, double rate) {
     if (!mic) { *error = L(@"Kein Mikrofon gefunden. Schließe eines an und versuche es erneut."); return nil; }
     // Engine muss laufen (nach dem Ruhemodus startet sie gerade neu)
     for (int i = 0; i < 40 && ![self onMain:^BOOL { return [self->_app engineActive]; }]; i++) usleep(100000);
-    if (![self onMain:^BOOL { return [self->_app engineActive]; }]) {
+    unsigned cycles = [_app ioCycles];
+    usleep(300000);
+    if ([_app ioCycles] == cycles) KickEngine();   // steht still, solange nichts spielt
+    for (int i = 0; i < 30 && [_app ioCycles] == cycles; i++) usleep(100000);
+    if (![self onMain:^BOOL { return [self->_app engineActive]; }] || [_app ioCycles] == cycles) {
         *error = L(@"Der Bass läuft gerade nicht. Schalte JumpBass ein und wähle eine Ausgabe, bei der der BassJump mitspielt.");
         return nil;
     }
@@ -282,7 +316,7 @@ static double HighBandRMS(NSData *data, double rate) {
     NSMutableDictionary *result = [NSMutableDictionary dictionary];
     [self report:L(@"Messe die Ruhe im Raum …") fraction:0.02];
     NSData *quiet = [self recordSpeaker:NULL bass:NULL raw:NO seconds:1.2 from:0.4 to:1.0];
-    if (!quiet) { *error = [self cancelled] ? nil : L(@"Die Messung wurde unterbrochen."); [_mic stop]; return nil; }
+    if (!quiet) { *error = [self interrupted]; [_mic stop]; return nil; }
 
     if (timing && ![self measureTimingInto:result error:error]) { [_mic stop]; return nil; }
     if (maxLevel && ![self measureMaxLevelInto:result quiet:quiet error:error]) { [_mic stop]; return nil; }
@@ -313,14 +347,18 @@ static double HighBandRMS(NSData *data, double rate) {
         micStart = [self->_mic position];
         return [self->_app playTestSpeaker:spk.mutableBytes bass:bs.mutableBytes frames:frames raw:raw];
     }];
-    if (!ok) return nil;
+    if (getenv("JUMPBASS_DEBUG") && !ok) NSLog(@"Testsignal abgelehnt (Engine aktiv %d)", [self onMain:^BOOL { return [self->_app engineActive]; }]);
+    if (!ok) { _failure = L(@"Bass-Ausgabe nicht bereit"); return nil; }
     CFAbsoluteTime deadline = CFAbsoluteTimeGetCurrent() + seconds + 3;
     // Die Puffer erst freigeben, wenn der IOProc fertig ist – auch bei Abbruch
     while ([_app testPlaying] && CFAbsoluteTimeGetCurrent() < deadline) usleep(10000);
-    if ([_app testPlaying]) return nil;
+    if ([_app testPlaying]) { _failure = L(@"Testsignal wurde nicht abgespielt"); return nil; }
     UInt64 start = micStart + (UInt64)(from * _mic.rate), count = (UInt64)((to - from) * _mic.rate);
     for (int i = 0; i < 100 && [_mic position] < start + count; i++) usleep(20000);
-    return [self cancelled] ? nil : [_mic framesFrom:start count:count];
+    NSData *rec = [self cancelled] ? nil : [_mic framesFrom:start count:count];
+    if (!rec) _failure = L(@"Mikrofon liefert keine Daten mehr");
+    if (getenv("JUMPBASS_DEBUG") && !rec) NSLog(@"Aufnahme fehlgeschlagen: %@", _failure);
+    return rec;
 }
 
 #pragma mark Bass-Timing
@@ -331,12 +369,13 @@ static double HighBandRMS(NSData *data, double rate) {
     const double kAt = 0.1, kGap = 0.6, kSpkDur = 0.15, kBassDur = 0.5;
     NSMutableArray<NSNumber *> *residuals = [NSMutableArray array];
     double worstSpk = INFINITY, worstBass = INFINITY;
-    for (int run = 0; run < 4; run++) {
-        [self report:[NSString stringWithFormat:L(@"Bass-Timing: Messung %d von %d …"), run + 1, 4] fraction:0.05 + 0.3 * run / 4];
+    const int kRuns = 8;
+    for (int run = 0; run < kRuns; run++) {
+        [self report:[NSString stringWithFormat:L(@"Bass-Timing: Messung %d von %d …"), run + 1, kRuns] fraction:0.03 + 0.32 * run / kRuns];
         NSData *rec = [self recordSpeaker:^(float *b, double rate) { AddChirp(b, rate, kAt, 1500, 6000, kSpkDur, 0.3f); }
                                      bass:^(float *b, double rate) { AddChirp(b, rate, kAt + kGap, 45, 110, kBassDur, 0.2f); }
                                       raw:NO seconds:1.5 from:0 to:1.8];
-        if (!rec) { if (![self cancelled]) *error = L(@"Die Messung wurde unterbrochen."); return NO; }
+        if (!rec) { *error = [self interrupted]; return NO; }
         double rate = _mic.rate;
         NSMutableData *refS = [NSMutableData dataWithLength:(size_t)(kSpkDur * rate) * sizeof(float)];
         NSMutableData *refB = [NSMutableData dataWithLength:(size_t)(kBassDur * rate) * sizeof(float)];
@@ -353,57 +392,75 @@ static double HighBandRMS(NSData *data, double rate) {
         [residuals addObject:@(((tb - ts) / rate - kGap) * 1000)];
     }
     if (getenv("JUMPBASS_DEBUG")) NSLog(@"Timing: Abweichungen %@ ms, Abstand zum Rauschen Lautsprecher %.1f, Bass %.1f", residuals, worstSpk, worstBass);
-    if (residuals.count < 2) {
+    if (residuals.count < kRuns / 2) {
         *error = worstSpk < 6 ? L(@"Die Lautsprecher waren im Mikrofon kaum zu hören. Stell die Lautstärke etwas höher und versuche es erneut.")
                               : L(@"Der BassJump war im Mikrofon kaum zu hören. Stell ihn näher an den Mac und versuche es erneut.");
         return NO;
     }
+    // Median, dann alles verwerfen, was mehr als 3 ms davon abweicht, und den Rest mitteln
     NSArray *sorted = [residuals sortedArrayUsingSelector:@selector(compare:)];
-    double median = [sorted[sorted.count / 2] doubleValue];
-    double spread = [sorted.lastObject doubleValue] - [sorted.firstObject doubleValue];
+    double median = [sorted[sorted.count / 2] doubleValue], sum = 0, lo = INFINITY, hi = -INFINITY;
+    int used = 0;
+    for (NSNumber *r in sorted) {
+        if (fabs(r.doubleValue - median) > 3) continue;
+        sum += r.doubleValue; used++;
+        lo = fmin(lo, r.doubleValue); hi = fmax(hi, r.doubleValue);
+    }
+    median = sum / used;
+    double spread = hi - lo;
     double current = [_app.defaults doubleForKey:@"bassOffsetMs"];
     // Abweichung > 0: Bass kommt zu spät an -> früher schicken
     double offset = MAX(-100, MIN(200, round(current - median)));
     result[@"offsetMs"] = @(offset);
-    result[@"timingSpreadMs"] = @(round(spread));
+    result[@"timingSpreadMs"] = @(round(spread * 10) / 10);
     return YES;
 }
 
 #pragma mark Maximalpegel
 
-// Tieftöne in steigendem Pegel direkt auf den BassJump (ohne Begrenzer). Sobald der Anteil oberhalb von 1 kHz
-// deutlich über die Raumruhe steigt, verzerrt bzw. knackt der Verstärker – dort ist die Grenze.
+// Tieftöne in steigendem Pegel direkt auf den BassJump (ohne Begrenzer). Übersteuert der Verstärker, springt der
+// Anteil oberhalb von 1 kHz sprunghaft nach oben (Knacken, Verzerrung) und der Ton wächst kaum noch mit.
+// Am BassJump 2 gemessen: bei 45, 60 und 80 Hz übereinstimmend ab -10 dBFS.
 - (BOOL)measureMaxLevelInto:(NSMutableDictionary *)result quiet:(NSData *)quiet error:(NSString **)error {
-    NSArray<NSNumber *> *levels = @[@-18, @-15, @-13, @-12, @-11, @-10, @-9, @-8];
-    NSArray<NSNumber *> *freqs = @[@50, @70];
+    NSArray<NSNumber *> *levels = @[@-20, @-17, @-15, @-14, @-13, @-12, @-11, @-10, @-9, @-8, @-7];
+    NSArray<NSNumber *> *freqs = @[@45, @60, @80];
     double rate = _mic.rate, quietHF = HighBandRMS(quiet, rate);
     double clip = INFINITY;
     NSUInteger step = 0, steps = levels.count * freqs.count;
     for (NSNumber *f in freqs) {
         double quietTone = ToneAmplitude(quiet, rate, f.doubleValue);
+        double prevTone = NAN, prevCrackle = NAN, prevLevel = NAN;
         for (NSNumber *level in levels) {
             if (level.doubleValue >= clip) break;   // über der schon gefundenen Grenze nicht weiter quälen
             [self report:[NSString stringWithFormat:L(@"Maximalpegel: %@ Hz bei %@ dB …"), f, level] fraction:0.4 + 0.4 * step++ / steps];
             float amp = powf(10, level.floatValue / 20);
-            NSData *rec = [self recordSpeaker:NULL bass:^(float *b, double r) { AddTone(b, r, 0, f.doubleValue, 0.8, amp); }
-                                          raw:YES seconds:0.9 from:0.3 to:0.75];
-            if (!rec) { if (![self cancelled]) *error = L(@"Die Messung wurde unterbrochen."); return NO; }
-            double tone = DB(ToneAmplitude(rec, rate, f.doubleValue)) - DB(quietTone);
-            double crackle = DB(HighBandRMS(rec, rate)) - DB(quietHF);
+            // Der Anteil über 1 kHz wächst normalerweise im gleichen Maß wie der Pegel (Eigenklang des BassJump).
+            // Übersteuern zeigt sich als Sprung weit darüber. Ein Sprung zählt erst, wenn er sich bei einer
+            // Wiederholung bestätigt – ein Geräusch im Raum reicht nicht.
+            double stepDB = level.doubleValue - prevLevel;
+            double tone = 0, crackle = INFINITY;
+            for (int attempt = 0; attempt < 2 && (attempt == 0 || crackle - prevCrackle - stepDB > 5); attempt++) {
+                NSData *rec = [self recordSpeaker:NULL bass:^(float *b, double r) { AddTone(b, r, 0, f.doubleValue, 1.0, amp); }
+                                              raw:YES seconds:1.1 from:0.3 to:0.95];
+                if (!rec) { *error = [self interrupted]; return NO; }
+                tone = DB(ToneAmplitude(rec, rate, f.doubleValue)) - DB(quietTone);
+                crackle = fmin(crackle, DB(HighBandRMS(rec, rate)) - DB(quietHF));
+                usleep(200000);
+            }
             if (getenv("JUMPBASS_DEBUG")) NSLog(@"Maximalpegel %@ Hz %@ dB: Ton +%.1f dB, Anteil >1 kHz +%.1f dB", f, level, tone, crackle);
             if ([level isEqual:levels.firstObject] && tone < 10) {
                 *error = L(@"Der BassJump war im Mikrofon kaum zu hören. Stell ihn näher an den Mac und versuche es erneut.");
                 return NO;
             }
-            if (crackle > 20) { clip = level.doubleValue; break; }
+            BOOL jump = crackle - prevCrackle - stepDB > 5 && crackle > 3;   // beim ersten Pegel (NaN) nie
+            BOOL saturated = tone - prevTone < 0.4 * stepDB;
+            if (jump || saturated) { clip = level.doubleValue; break; }
+            prevTone = tone; prevCrackle = crackle; prevLevel = level.doubleValue;
         }
     }
-    double maxLevel = -10;
-    if (isfinite(clip)) {
-        maxLevel = [MaxLevelChoices().lastObject doubleValue];
-        for (NSNumber *c in MaxLevelChoices()) if (c.doubleValue <= clip - 1) { maxLevel = c.doubleValue; break; }
-        result[@"clipDB"] = @(clip);
-    }
+    // 1 dB unter der Grenze; nie über der festen Obergrenze
+    double maxLevel = isfinite(clip) ? fmin(clip - 1, kHardwareCeilingDB) : kHardwareCeilingDB;
+    if (isfinite(clip)) result[@"clipDB"] = @(clip);
     result[@"maxLevelDB"] = @(maxLevel);
     return YES;
 }
@@ -438,15 +495,21 @@ static void PostVolumeKey(BOOL up) {
     NSMutableArray<NSArray<NSNumber *> *> *points = [NSMutableArray array];
     int pressed = 0;
     float v = start, step = 0;
-    for (int i = 0; i < 5; i++) {
-        [self report:[NSString stringWithFormat:L(@"Lautstärkekurve: %.0f %% …"), v * 100] fraction:0.82 + 0.15 * i / 5];
-        NSData *rec = [self recordSpeaker:^(float *b, double r) { AddTone(b, r, 0, 1000, 0.8, 0.06f); }
-                                     bass:NULL raw:NO seconds:0.9 from:0.3 to:0.75];
-        if (!rec) break;
-        [points addObject:@[@(v), @(DB(ToneAmplitude(rec, rate, 1000)))]];
-        if (i == 4 || v > 0.7f) break;
-        // Schrittweite beim ersten Tastendruck bestimmen, dann je etwa 10 %
-        int presses = step > 0 ? MAX(1, (int)lroundf(0.1f / step)) : 1;
+    const int kPoints = 8;
+    for (int i = 0; i < kPoints; i++) {
+        [self report:[NSString stringWithFormat:L(@"Lautstärkekurve: %.0f %% …"), v * 100] fraction:0.82 + 0.15 * i / kPoints];
+        double level = 0;
+        int got = 0;
+        for (int k = 0; k < 2; k++) {   // je Stufe zweimal messen und mitteln
+            NSData *rec = [self recordSpeaker:^(float *b, double r) { AddTone(b, r, 0, 1000, 0.8, 0.06f); }
+                                         bass:NULL raw:NO seconds:0.9 from:0.3 to:0.75];
+            if (rec) { level += DB(ToneAmplitude(rec, rate, 1000)); got++; }
+        }
+        if (!got) break;
+        [points addObject:@[@(v), @(level / got)]];
+        if (i == kPoints - 1 || v > start + 0.45f || v > 0.8f) break;
+        // Schrittweite beim ersten Tastendruck bestimmen, dann je etwa 6 %
+        int presses = step > 0 ? MAX(1, (int)lroundf(0.06f / step)) : 1;
         float next = [self pressVolume:YES times:presses];
         pressed += presses;
         if (step == 0) step = next - v;
@@ -455,23 +518,23 @@ static void PostVolumeKey(BOOL up) {
     }
     if (pressed) [self pressVolume:NO times:pressed];
     if ([self cancelled]) return NO;
-    if (points.count < 3) {
+    if (points.count < 4) {
         *error = L(@"Die Monitor-Lautstärke ließ sich nicht verstellen. Prüfe, ob eine App wie MonitorControl, BetterDisplay oder Lunar die Lautstärketasten an den Monitor weitergibt und JumpBass unter Bedienungshilfen freigegeben ist.");
         return NO;
     }
-    // Steigung dB je Lautstärke 0…1 (lineare Regression)
+    // Pegel in dB gegen 20·log10(Lautstärke): Die Steigung ist der Exponent (1 = Schalldruck proportional zur Einstellung)
     double sx = 0, sy = 0, sxx = 0, sxy = 0, n = points.count;
     for (NSArray *p in points) {
-        double x = [p[0] doubleValue], y = [p[1] doubleValue];
+        double x = 20 * log10(fmax([p[0] doubleValue], 0.001)), y = [p[1] doubleValue];
         sx += x; sy += y; sxx += x * x; sxy += x * y;
     }
-    double slope = (n * sxy - sx * sy) / (n * sxx - sx * sx);
-    if (getenv("JUMPBASS_DEBUG")) NSLog(@"Lautstärkekurve %@ -> %.1f dB je 100 %%", points, slope);
-    if (!isfinite(slope) || slope < 5 || slope > 80) {
+    double exponent = (n * sxy - sx * sy) / (n * sxx - sx * sx);
+    if (getenv("JUMPBASS_DEBUG")) NSLog(@"Lautstärkekurve %@ -> Exponent %.2f", points, exponent);
+    if (!isfinite(exponent) || exponent < 0.3 || exponent > 3) {
         *error = L(@"Die Lautstärkekurve ließ sich nicht sicher messen. Bitte im Raum still sein und erneut versuchen.");
         return NO;
     }
-    result[@"volumeSlope"] = @(round(slope * 10) / 10);
+    result[@"volumeExponent"] = @(round(exponent * 100) / 100);
     return YES;
 }
 

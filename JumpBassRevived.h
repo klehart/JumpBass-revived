@@ -34,10 +34,18 @@ static inline NSString *LevelText(double level, BOOL db) {
 // Maximalpegel-Stufen. Gemessen: Der Verstärker im BassJump übersteuert ab etwa -10 dBFS am Eingang
 // (darüber wird er nicht lauter, nur verzerrter), daher liegt die höchste Stufe dort.
 static const double kHardwareCeilingDB = -10;
-static inline NSArray<NSNumber *> *MaxLevelChoices(void) { return @[@-10, @-12, @-15, @-18]; }
+// Feste Stufen; ein gemessener Wert (Kalibrierung), der keiner davon entspricht, kommt als eigener Eintrag dazu.
+static inline NSArray<NSNumber *> *MaxLevelChoices(double current) {
+    NSMutableArray *list = [@[@-10, @-12, @-15, @-18] mutableCopy];
+    BOOL listed = NO;
+    for (NSNumber *n in list) listed |= fabs(n.doubleValue - current) < 0.25;
+    if (!listed && current < 0) [list addObject:@(current)];
+    return [list sortedArrayUsingComparator:^NSComparisonResult(NSNumber *a, NSNumber *b) { return [b compare:a]; }];
+}
 static inline NSString *MaxLevelTitle(NSNumber *db) {
-    if (db.intValue == -10) return L(@"-10 dB (am Limit)");
-    if (db.intValue == -12) return L(@"-12 dB (empfohlen)");
+    if (db.doubleValue == -10) return L(@"-10 dB (am Limit)");
+    if (db.doubleValue == -12) return L(@"-12 dB (empfohlen)");
+    if (![@[@-15, @-18] containsObject:db]) return [NSString stringWithFormat:L(@"%g dB (gemessen)"), db.doubleValue];
     return [NSString stringWithFormat:@"%@ dB", db];
 }
 
@@ -89,12 +97,13 @@ BOOL LooksLikeBassJump(AudioObjectID dev);
 // Kalibrierung
 - (NSString *)currentOutputName;
 - (float)monitorVolume;                 // 0…1 bei Monitoren mit eigener, lesbarer Lautstärke, sonst -1
-- (NSDictionary *)calibrationForCurrentOutput;  // date, offsetMs, timingSpreadMs, clipDB, maxLevelDB, volumeSlope
+- (NSDictionary *)calibrationForCurrentOutput;  // date, offsetMs, timingSpreadMs, clipDB, maxLevelDB, volumeExponent
 - (void)applyCalibration:(NSDictionary *)result;
 - (void)resetCalibration;
 - (void)setCalibrating:(BOOL)on;
 - (BOOL)playTestSpeaker:(const float *)speaker bass:(const float *)bass frames:(UInt32)frames raw:(BOOL)raw;
 - (BOOL)testPlaying;
+- (unsigned)ioCycles;                   // Zähler der Audio-Durchläufe (läuft die Engine?)
 - (double)outputSampleRate;
 - (AudioObjectID)measurementMicrophone;
 @end
@@ -119,4 +128,5 @@ BOOL LooksLikeBassJump(AudioObjectID dev);
 - (instancetype)initWithApp:(AppDelegate *)app;
 - (void)show;
 - (void)snapshot:(NSString *)path tab:(NSInteger)tab;
+- (void)startCalibrationNow;
 @end

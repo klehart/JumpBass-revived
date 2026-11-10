@@ -414,10 +414,6 @@ static double ScalePos(double vu) {
          "-12 dB lässt etwas Reserve. Kracht es trotzdem, weiter senken. Leuchtet LIMIT ständig, "
          "ist die BassJump-Lautstärke zu hoch eingestellt.")];
     _maxLevel = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(cx - 3, y - 1, cw + 6, 26) pullsDown:NO];
-    for (NSNumber *db in MaxLevelChoices()) {
-        [_maxLevel addItemWithTitle:MaxLevelTitle(db)];
-        _maxLevel.lastItem.representedObject = db;
-    }
     _maxLevel.target = self;
     _maxLevel.action = @selector(chooseMaxLevel:);
     [_soundPane addSubview:_maxLevel];
@@ -565,12 +561,12 @@ static double ScalePos(double vu) {
     f.dateStyle = NSDateFormatterMediumStyle;
     f.timeStyle = NSDateFormatterShortStyle;
     NSMutableArray *parts = [NSMutableArray array];
-    if (cal[@"offsetMs"]) [parts addObject:[NSString stringWithFormat:L(@"Bass-Timing %+.0f ms"), [cal[@"offsetMs"] doubleValue]]];
+    if (cal[@"offsetMs"]) [parts addObject:[NSString stringWithFormat:L(@"Bass-Timing %+.0f ms (Streuung %.1f ms)"), [cal[@"offsetMs"] doubleValue], [cal[@"timingSpreadMs"] doubleValue]]];
     if (cal[@"maxLevelDB"]) {
         [parts addObject:cal[@"clipDB"] ? [NSString stringWithFormat:L(@"Maximalpegel %.0f dB (übersteuert ab %.0f dB)"), [cal[@"maxLevelDB"] doubleValue], [cal[@"clipDB"] doubleValue]]
                                         : [NSString stringWithFormat:L(@"Maximalpegel %.0f dB (keine Übersteuerung gefunden)"), [cal[@"maxLevelDB"] doubleValue]]];
     }
-    if (cal[@"volumeSlope"]) [parts addObject:[NSString stringWithFormat:L(@"Lautstärkekurve %.1f dB je 10 %%"), [cal[@"volumeSlope"] doubleValue] / 10]];
+    if (cal[@"volumeExponent"]) [parts addObject:[NSString stringWithFormat:L(@"Lautstärkekurve: doppelte Lautstärke = %+.1f dB"), [cal[@"volumeExponent"] doubleValue] * 20 * log10(2)]];
     _calResult.stringValue = [NSString stringWithFormat:L(@"Zuletzt kalibriert am %@:\n%@"), [f stringFromDate:cal[@"date"]], [parts componentsJoinedByString:@" · "]];
 }
 
@@ -583,6 +579,7 @@ static double ScalePos(double vu) {
     BOOL volume = _calVolume.enabled && _calVolume.state == NSControlStateValueOn;
     if (volume && !AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)@{ (__bridge NSString *)kAXTrustedCheckOptionPrompt: @YES })) {
         _calStatus.stringValue = L(@"Für die Lautstärkekurve braucht JumpBass die Freigabe „Bedienungshilfen“. Erteile sie und starte die Kalibrierung erneut.");
+        if (getenv("JUMPBASS_DEBUG")) NSLog(@"Kalibrierung: Bedienungshilfen fehlen");
         return;
     }
     if (!_calibrator) _calibrator = [[Calibrator alloc] initWithApp:_app];
@@ -593,6 +590,7 @@ static double ScalePos(double vu) {
         self->_calStatus.stringValue = text;
         self->_calProgress.doubleValue = fraction;
     } completion:^(NSDictionary *result, NSString *error) {
+        if (getenv("JUMPBASS_DEBUG")) NSLog(@"Kalibrierung beendet: %@ %@", result, error);
         if (result.count) [self->_app applyCalibration:result];
         self->_calStatus.stringValue = error ?: result.count ? L(@"Fertig – die gemessenen Werte sind übernommen.") : result ? @"" : L(@"Abgebrochen.");
         [self refresh];
@@ -603,6 +601,13 @@ static double ScalePos(double vu) {
 - (void)showCalibration:(id)sender {
     [self refreshCalibration];
     if (!_calSheet.sheetParent) [_window beginSheet:_calSheet completionHandler:nil];
+}
+
+- (void)startCalibrationNow {
+    _tabs.selectedSegment = 1;
+    [self switchTab:_tabs];
+    [self showCalibration:nil];
+    if (!_calibrator.running) [self startCalibration:nil];
 }
 
 - (void)closeCalibration:(id)sender {
@@ -690,7 +695,16 @@ static double ScalePos(double vu) {
     [self updateValueLabels];
 
     [self selectItemIn:_subsonic value:[d doubleForKey:@"subsonicHz"]];
-    [self selectItemIn:_maxLevel value:[d doubleForKey:@"maxLevelDB"]];
+    double maxLevel = [d doubleForKey:@"maxLevelDB"];
+    NSArray *choices = MaxLevelChoices(maxLevel);
+    if (![[_maxLevel.itemArray valueForKey:@"representedObject"] isEqualToArray:choices]) {
+        [_maxLevel removeAllItems];
+        for (NSNumber *db in choices) {
+            [_maxLevel addItemWithTitle:MaxLevelTitle(db)];
+            _maxLevel.lastItem.representedObject = db;
+        }
+    }
+    [self selectItemIn:_maxLevel value:maxLevel];
     _idle.state = [d boolForKey:@"idleStandby"];
     _login.state = [_app launchAtLogin];
     _idle.enabled = [_app usesSystemTap];

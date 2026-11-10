@@ -99,10 +99,10 @@
 "Zurücksetzen" = "Reset";
 "Misst mit dem Mikrofon des Macs, wie der BassJump mit „%@“ zusammenspielt, und stellt die Werte passend ein. Dauert etwa eine halbe Minute, kurz wird es laut. Vorher: Raum still, Mac und BassJump wie beim Hören aufstellen, normale Lautstärke." = "Uses the Mac's microphone to measure how the BassJump works with “%@” and adjusts the settings. Takes about 30 seconds and briefly gets loud. Keep the room quiet, place Mac and BassJump as when listening, use normal volume.";
 "„%@“ ist noch nicht kalibriert." = "“%@” has not been calibrated yet.";
-"Bass-Timing %+.0f ms" = "Bass timing %+.0f ms";
+"Bass-Timing %+.0f ms (Streuung %.1f ms)" = "Bass timing %+.0f ms (spread %.1f ms)";
 "Maximalpegel %.0f dB (übersteuert ab %.0f dB)" = "Maximum level %.0f dB (clips from %.0f dB)";
 "Maximalpegel %.0f dB (keine Übersteuerung gefunden)" = "Maximum level %.0f dB (no clipping found)";
-"Lautstärkekurve %.1f dB je 10 %%" = "Volume curve %.1f dB per 10 %%";
+"Lautstärkekurve: doppelte Lautstärke = %+.1f dB" = "Volume curve: double volume = %+.1f dB";
 "Zuletzt kalibriert am %@:\n%@" = "Last calibrated on %@:\n%@";
 "Wird abgebrochen …" = "Cancelling …";
 "Für die Lautstärkekurve braucht JumpBass die Freigabe „Bedienungshilfen“. Erteile sie und starte die Kalibrierung erneut." = "For the volume curve JumpBass needs the Accessibility permission. Grant it and start the calibration again.";
@@ -115,7 +115,6 @@
 "Der Bass läuft gerade nicht. Schalte JumpBass ein und wähle eine Ausgabe, bei der der BassJump mitspielt." = "The bass is not running right now. Turn JumpBass on and choose an output the BassJump plays along with.";
 "Das Mikrofon liefert keinen Ton (Fehler %d)." = "The microphone delivers no sound (error %d).";
 "Messe die Ruhe im Raum …" = "Measuring the room's background noise …";
-"Die Messung wurde unterbrochen." = "The measurement was interrupted.";
 "Bass-Timing: Messung %d von %d …" = "Bass timing: measurement %d of %d …";
 "Die Lautsprecher waren im Mikrofon kaum zu hören. Stell die Lautstärke etwas höher und versuche es erneut." = "The speakers were barely audible to the microphone. Turn the volume up a little and try again.";
 "Der BassJump war im Mikrofon kaum zu hören. Stell ihn näher an den Mac und versuche es erneut." = "The BassJump was barely audible to the microphone. Move it closer to the Mac and try again.";
@@ -126,3 +125,8 @@
 "Kalibrieren …" = "Calibrate …";
 "Schließen" = "Close";
 "Misst mit dem Mikrofon des Macs Bass-Timing, Maximalpegel und bei Monitoren die Lautstärkekurve und stellt die Werte passend ein." = "Uses the Mac's microphone to measure bass timing, maximum level and, for displays, the volume curve, and sets the values to match.";
+"Die Messung wurde unterbrochen (%@)." = "The measurement was interrupted (%@).";
+"Bass-Ausgabe nicht bereit" = "bass output not ready";
+"Testsignal wurde nicht abgespielt" = "test signal was not played";
+"Mikrofon liefert keine Daten mehr" = "microphone stopped delivering data";
+"%g dB (gemessen)" = "%g dB (measured)";

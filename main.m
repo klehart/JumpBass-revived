@@ -92,6 +92,7 @@ typedef struct {
     UInt32 testPos;
     int testRaw;                // 1 = Bass ohne Filter, Pegel und Begrenzer (Messung der Übersteuerung)
     _Atomic UInt32 testFrames;
+    atomic_uint ioCycles;       // Aufrufe des IOProc (Diagnose)
 
     // Puffer-Layout des Aggregate-Devices
     UInt32 inputBuffer;
@@ -169,13 +170,25 @@ static OSStatus BassIOProc(AudioObjectID device, const AudioTimeStamp *now,
     const LimiterParams lim = e->lim;
     UInt32 lookahead = MIN(lim.lookahead, kLookaheadRing - 1);
     float limit = atomic_load(&e->limitLevel);
-    if (!inData || e->inputBuffer >= inData->mNumberBuffers) return noErr;
+    UInt32 testFrames = atomic_load_explicit(&e->testFrames, memory_order_acquire);
+    atomic_fetch_add_explicit(&e->ioCycles, 1, memory_order_relaxed);
 
-    const AudioBuffer *in = &inData->mBuffers[e->inputBuffer];
-    if (!in->mData || in->mNumberChannels == 0) return noErr;
-    const float *src = (const float *)in->mData;
-    UInt32 inCh = in->mNumberChannels;
-    UInt32 frames = in->mDataByteSize / (sizeof(float) * inCh);
+    // Liefert der Systemton gerade keinen Puffer (nichts spielt), laufen nur Testsignale – mit der Länge der Ausgabe
+    const float *src = NULL;
+    UInt32 inCh = 1, frames = 0;
+    if (inData && e->inputBuffer < inData->mNumberBuffers) {
+        const AudioBuffer *in = &inData->mBuffers[e->inputBuffer];
+        if (in->mData && in->mNumberChannels) {
+            src = (const float *)in->mData;
+            inCh = in->mNumberChannels;
+            frames = in->mDataByteSize / (sizeof(float) * inCh);
+        }
+    }
+    if (!src) {
+        if (!testFrames || e->bassFirst >= outData->mNumberBuffers) return noErr;
+        const AudioBuffer *out = &outData->mBuffers[e->bassFirst];
+        frames = out->mNumberChannels ? out->mDataByteSize / (sizeof(float) * out->mNumberChannels) : 0;
+    }
 
     // Mono-Summe -> LR4-Tiefpass -> Pegel -> BassJump; volles Signal -> Lautsprecher.
     // Beide Wege laufen durch Verzögerungsringe, damit sie gleichzeitig am Ohr ankommen.
@@ -186,11 +199,10 @@ static OSStatus BassIOProc(AudioObjectID device, const AudioTimeStamp *now,
     UInt32 passDelay = (UInt32)MIN(MAX(atomic_load(&e->passDelay), 0), kRingSize - 1);
     UInt32 bassEnd = MIN(e->bassFirst + e->bassCount, outData->mNumberBuffers);
     UInt32 passEnd = MIN(e->passFirst + e->passCount, outData->mNumberBuffers);
-    UInt32 testFrames = atomic_load_explicit(&e->testFrames, memory_order_acquire);
 
     for (UInt32 i = 0; i < frames; i++) {
-        float l = src[i * inCh];
-        float r = inCh > 1 ? src[i * inCh + 1] : l;
+        float l = src ? src[i * inCh] : 0.0f;
+        float r = src && inCh > 1 ? src[i * inCh + 1] : l;
         inPeak = fmaxf(inPeak, fmaxf(fabsf(l), fabsf(r)));
         double mono = 0.5 * ((double)l + r);
         float testBass = 0.0f;
@@ -426,18 +438,18 @@ static AudioObjectID FallbackMicrophone(AudioObjectID bassJump) {
 // direkt im Gerät; macOS erfährt davon nichts. Wir fragen den Wert selbst per DDC ab (DDC.m). Klappt das nicht
 // (Intel-Mac, Dock ohne DDC), lesen wir ihn aus MonitorControl: "value98(<Name><Hersteller><Modell>@<Display-ID>)"
 // (98 = DDC-Lautstärke 0…1, 141 = DDC-Stummschaltung, 2 = stumm, 1 = an).
-// Gemessen am LG UltraFine: Der Pegel steigt ziemlich genau um 3 dB je 10 % (in dB, 0 dB = 100 %).
-// Eine Kalibrierung ersetzt die Steigung durch den gemessenen Wert des jeweiligen Monitors.
-static const float kMonitorSlopeDB = 30.0f;
-static float MonitorVolumeDB(float v, float slope) {
-    return v < 0.005f ? -INFINITY : slope * (v - 1.0f);
+// Gemessen am LG UltraFine (5 … 42 %, 8 Punkte): Der Schalldruck ist proportional zur eingestellten Lautstärke,
+// doppelte Prozentzahl = +6 dB, auf 0,3 dB genau. Eine Kalibrierung misst den Exponenten des jeweiligen Monitors.
+static const float kMonitorExponent = 1.0f;
+static float MonitorVolumeDB(float v, float exponent) {
+    return v < 0.005f ? -INFINITY : exponent * 20.0f * log10f(v);
 }
 
-static float CalibratedMonitorSlope(AudioObjectID dev) {
+static float CalibratedMonitorExponent(AudioObjectID dev) {
     NSString *uid = DeviceUID(dev);
     NSDictionary *cal = uid ? [[NSUserDefaults standardUserDefaults] dictionaryForKey:@"calibrations"][uid] : nil;
-    NSNumber *slope = [cal isKindOfClass:[NSDictionary class]] ? cal[@"volumeSlope"] : nil;
-    return [slope isKindOfClass:[NSNumber class]] && slope.floatValue > 5 ? slope.floatValue : kMonitorSlopeDB;
+    NSNumber *e = [cal isKindOfClass:[NSDictionary class]] ? cal[@"volumeExponent"] : nil;
+    return [e isKindOfClass:[NSNumber class]] && e.floatValue > 0.2f && e.floatValue < 4 ? e.floatValue : kMonitorExponent;
 }
 
 static NSString *ScreenName(NSScreen *screen) {
@@ -456,7 +468,7 @@ static BOOL ExternalMonitorValue(AudioObjectID dev, float *volume, BOOL *muted) 
 static BOOL ExternalMonitorDB(AudioObjectID dev, float *db) {
     float v; BOOL muted;
     if (!ExternalMonitorValue(dev, &v, &muted)) return NO;
-    *db = muted ? -INFINITY : MonitorVolumeDB(v, CalibratedMonitorSlope(dev));
+    *db = muted ? -INFINITY : MonitorVolumeDB(v, CalibratedMonitorExponent(dev));
     return YES;
 }
 
@@ -663,6 +675,13 @@ static void SetHardwareSilent(AudioObjectID dev, BOOL silent);
     self.updateTimer = [NSTimer scheduledTimerWithTimeInterval:3600 target:self selector:@selector(checkForUpdate) userInfo:nil repeats:YES];
     [self performSelector:@selector(checkForUpdate) withObject:nil afterDelay:10];
 
+    // Diagnose: JUMPBASS_CALIBRATE=1 öffnet die Kalibrierung und startet sie sofort
+    if (NSProcessInfo.processInfo.environment[@"JUMPBASS_CALIBRATE"]) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+            [self showWindow:nil];
+            [self.window startCalibrationNow];
+        });
+    }
     NSString *snap = NSProcessInfo.processInfo.environment[@"JUMPBASS_SNAPSHOT"];
     if (snap) {
         [self showWindow:nil];
@@ -710,6 +729,7 @@ static void SetHardwareSilent(AudioObjectID dev, BOOL silent);
     float limGain = atomic_exchange(&_engine.limMinGain, 1.0f);
     if (limGain < 0.89f) _limitingUntil = CFAbsoluteTimeGetCurrent() + 0.6; // mehr als 1 dB abgesenkt
     if (getenv("JUMPBASS_DEBUG")) {
+        if (atomic_load(&_engine.testFrames)) NSLog(@"Test: Position %u von %u, IOProc-Aufrufe %u", _engine.testPos, atomic_load(&_engine.testFrames), atomic_load(&_engine.ioCycles));
         NSLog(@"Pegel %.4f, Begrenzer %.1f dB, Gain %.3f, IO-Abstand %.1f ms, Aggregate: Puffer %u, Latenz ein %u/%u aus %u/%u Frames @ %.0f Hz",
               p, 20 * log10f(fmaxf(limGain, 1e-6f)), atomic_load(&_engine.targetGain), atomic_load(&_engine.ioDelayMs),
               DeviceUInt32(_aggregate, kAudioDevicePropertyBufferFrameSize, kAudioObjectPropertyScopeGlobal),
@@ -1344,7 +1364,7 @@ static SInt32 OutputLatency(AudioObjectID dev) {
     [menu addItem:[NSMenuItem separatorItem]];
 
     NSMutableArray *maxItems = [NSMutableArray array];
-    for (NSNumber *db in MaxLevelChoices()) {
+    for (NSNumber *db in MaxLevelChoices([d doubleForKey:@"maxLevelDB"])) {
         [maxItems addObject:[self item:MaxLevelTitle(db) action:@selector(chooseMaxLevel:) rep:db checked:fabs([d doubleForKey:@"maxLevelDB"] - db.doubleValue) < 0.5]];
     }
     [menu addItem:[self submenu:L(@"Maximalpegel (gegen Krachen)") items:maxItems]];
@@ -1451,6 +1471,7 @@ static NSArray<NSString *> *ProfileKeys(void) { return @[@"levelDB", @"crossover
 }
 
 - (BOOL)testPlaying { return atomic_load(&_engine.testFrames) != 0; }
+- (unsigned)ioCycles { return atomic_load(&_engine.ioCycles); }
 - (double)outputSampleRate { return _sampleRate; }
 - (AudioObjectID)measurementMicrophone { return FallbackMicrophone([self findBassJump]); }
 - (NSString *)currentOutputName { AudioObjectID out = DefaultOutputDevice(); return out ? DeviceName(out) : nil; }
