@@ -151,6 +151,7 @@ static double ScalePos(double vu) {
     NSWindow *_calSheet;
     Calibrator *_calibrator;
     NSButton *_calTiming, *_calMax, *_calVolume, *_calStart, *_calReset;
+    NSPopUpButton *_calMic;
     NSProgressIndicator *_calProgress;
     NSTextField *_calIntro, *_calStatus, *_calResult;
     NSPopUpButton *_presets, *_device, *_levelStyle, *_subsonic, *_maxLevel;
@@ -467,7 +468,7 @@ static double ScalePos(double vu) {
     NSButton *calibrate = [NSButton buttonWithTitle:L(@"Kalibrieren …") target:self action:@selector(showCalibration:)];
     calibrate.frame = NSMakeRect(20, 230, 150, 28);
     [_settingsPane addSubview:calibrate];
-    [self addInfoAt:NSMakePoint(176, 236) in:_settingsPane text:L(@"Misst mit dem Mikrofon des Macs Bass-Timing, Maximalpegel und bei Monitoren die Lautstärkekurve und stellt die Werte passend ein.")];
+    [self addInfoAt:NSMakePoint(176, 236) in:_settingsPane text:L(@"Misst mit dem Mikrofon Bass-Timing, Maximalpegel und bei Monitoren die Lautstärkekurve und stellt die Werte passend ein.")];
     NSButton *uninstall = [NSButton buttonWithTitle:L(@"Deinstallieren …") target:_app action:@selector(uninstall:)];
     uninstall.frame = NSMakeRect(kWidth - 20 - 150, 230, 150, 28);
     [_settingsPane addSubview:uninstall];
@@ -475,21 +476,21 @@ static double ScalePos(double vu) {
 
 // Kleines Fenster (Sheet) über dem Hauptfenster
 - (void)buildCalibrationSheet {
-    _calSheet = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, kWidth, 286) styleMask:NSWindowStyleMaskTitled
+    _calSheet = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, kWidth, 336) styleMask:NSWindowStyleMaskTitled
                                               backing:NSBackingStoreBuffered defer:YES];
     _calSheet.title = L(@"Kalibrieren");
     _calSheet.appearance = _window.appearance;
-    NSVisualEffectView *bg = [[NSVisualEffectView alloc] initWithFrame:NSMakeRect(0, 0, kWidth, 286)];
+    NSVisualEffectView *bg = [[NSVisualEffectView alloc] initWithFrame:NSMakeRect(0, 0, kWidth, 336)];
     if (@available(macOS 10.14, *)) bg.material = NSVisualEffectMaterialHUDWindow;
     bg.state = NSVisualEffectStateActive;
     _calSheet.contentView = bg;
     FlippedView *content = [[FlippedView alloc] initWithFrame:bg.bounds];
     [bg addSubview:content];
-    _calPane = [[FlippedView alloc] initWithFrame:NSMakeRect(0, 20, kWidth, 230)];
+    _calPane = [[FlippedView alloc] initWithFrame:NSMakeRect(0, 20, kWidth, 280)];
     [content addSubview:_calPane];
     NSButton *close = [NSButton buttonWithTitle:L(@"Schließen") target:self action:@selector(closeCalibration:)];
     close.keyEquivalent = @"\e";
-    close.frame = NSMakeRect(kWidth - 24 - 110, 244, 116, 30);
+    close.frame = NSMakeRect(kWidth - 24 - 110, 294, 116, 30);
     [content addSubview:close];
 
     CGFloat x = 24, w = kWidth - 48;
@@ -515,32 +516,42 @@ static double ScalePos(double vu) {
     [self addInfo:L(@"Spielt Tieftöne in steigender Lautstärke auf dem BassJump, bis er hörbar übersteuert, und setzt den Maximalpegel knapp darunter. Dabei wird es kurz laut. Gilt für alle Ausgaben.") after:_calMax];
     [self addInfo:L(@"Nur bei externen Monitoren mit eigener Lautstärke: Verstellt sie kurz über die Lautstärketasten und misst, wie stark der Monitor lauter wird, damit der Bass genau mitgeht. Dafür muss eine App wie MonitorControl, BetterDisplay oder Lunar die Tasten an den Monitor weitergeben. Braucht die Freigabe „Bedienungshilfen“.") after:_calVolume];
 
+    NSTextField *micLabel = [self label:L(@"Mikrofon:") size:12 weight:NSFontWeightRegular frame:NSMakeRect(x, 108, 0, 18)];
+    [micLabel setFrameSize:NSMakeSize(micLabel.intrinsicContentSize.width, 18)];
+    [_calPane addSubview:micLabel];
+    CGFloat mx = x + micLabel.frame.size.width + 6;
+    _calMic = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(mx, 102, w - (mx - x) - 26, 26) pullsDown:NO];
+    _calMic.target = self;
+    _calMic.action = @selector(chooseMicrophone:);
+    [_calPane addSubview:_calMic];
+    [self addInfoAt:NSMakePoint(NSMaxX(_calMic.frame) + 6, 107) in:_calPane text:L(@"Das eingebaute Mikrofon liefert meist die genauesten Ergebnisse. Ein externes Mikrofon an den Hörplatz legen, nicht direkt an den BassJump oder die Lautsprecher.")];
+
     _calStart = [NSButton buttonWithTitle:L(@"Kalibrierung starten") target:self action:@selector(startCalibration:)];
-    _calStart.frame = NSMakeRect(x - 6, 104, 190, 30);
+    _calStart.frame = NSMakeRect(x - 6, 138, 190, 30);
     [_calPane addSubview:_calStart];
-    _calProgress = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(x + 196, 110, w - 196, 20)];
+    _calProgress = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(x + 196, 144, w - 196, 20)];
     _calProgress.indeterminate = NO;
     _calProgress.minValue = 0;
     _calProgress.maxValue = 1;
     _calProgress.hidden = YES;
     [_calPane addSubview:_calProgress];
-    _calStatus = [self label:@"" size:12 weight:NSFontWeightRegular frame:NSMakeRect(x, 140, w, 34)];
+    _calStatus = [self label:@"" size:12 weight:NSFontWeightRegular frame:NSMakeRect(x, 174, w, 34)];
     _calStatus.lineBreakMode = NSLineBreakByWordWrapping;
     _calStatus.maximumNumberOfLines = 2;
     [_calPane addSubview:_calStatus];
 
     _calResult = [NSTextField wrappingLabelWithString:@""];
     _calResult.font = [NSFont systemFontOfSize:12];
-    _calResult.frame = NSMakeRect(x, 178, w - 130, 50);
+    _calResult.frame = NSMakeRect(x, 212, w, 66);
     [_calPane addSubview:_calResult];
     _calReset = [NSButton buttonWithTitle:L(@"Zurücksetzen") target:self action:@selector(resetCalibration:)];
-    _calReset.frame = NSMakeRect(kWidth - 24 - 120, 182, 126, 30);
+    _calReset.frame = NSMakeRect(kWidth - 24 - 120, 138, 126, 30);
     [_calPane addSubview:_calReset];
 }
 
 - (void)refreshCalibration {
     NSString *output = [_app currentOutputName] ?: @"–";
-    _calIntro.stringValue = [NSString stringWithFormat:L(@"Misst mit dem Mikrofon des Macs, wie der BassJump mit „%@“ zusammenspielt, und stellt die Werte passend ein. Dauert etwa eine halbe Minute, kurz wird es laut. Vorher: Raum still, Mac und BassJump wie beim Hören aufstellen, normale Lautstärke."), output];
+    _calIntro.stringValue = [NSString stringWithFormat:L(@"Misst mit dem Mikrofon, wie der BassJump mit „%@“ zusammenspielt, und stellt die Werte passend ein. Dauert gut zwei Minuten, kurz wird es laut. Vorher: Raum still, Mac und BassJump wie beim Hören aufstellen, normale Lautstärke."), output];
     BOOL monitor = [_app monitorVolume] >= 0;
     BOOL running = _calibrator.running;
     if (monitor != (_calVolume.tag == 1)) {   // nur beim Wechsel der Ausgabe vorbelegen, nicht die Wahl überschreiben
@@ -548,7 +559,8 @@ static double ScalePos(double vu) {
         _calVolume.state = monitor ? NSControlStateValueOn : NSControlStateValueOff;
     }
     _calVolume.enabled = monitor && !running;
-    _calTiming.enabled = _calMax.enabled = !running;
+    _calTiming.enabled = _calMax.enabled = _calMic.enabled = !running;
+    [self rebuildMicrophones];
     _calStart.title = running ? L(@"Abbrechen") : L(@"Kalibrierung starten");
     _calProgress.hidden = !running;
 
@@ -570,6 +582,23 @@ static double ScalePos(double vu) {
     if (cal[@"volumeExponent"]) [parts addObject:[NSString stringWithFormat:L(@"Lautstärkekurve: doppelte Lautstärke = %+.1f dB"), [cal[@"volumeExponent"] doubleValue] * 20 * log10(2)]];
     _calResult.stringValue = [NSString stringWithFormat:L(@"Zuletzt kalibriert am %@:\n%@"), [f stringFromDate:cal[@"date"]], [parts componentsJoinedByString:@" · "]];
 }
+
+- (void)rebuildMicrophones {
+    NSString *chosen = _app.calibrationMicUID;
+    [_calMic removeAllItems];
+    [_calMic addItemWithTitle:L(@"Automatisch (eingebautes bevorzugt)")];
+    _calMic.lastItem.representedObject = @"";
+    BOOL found = NO;
+    for (NSDictionary *mic in [_app microphones]) {
+        NSString *title = [mic[@"builtIn"] boolValue] ? [NSString stringWithFormat:L(@"%@ (empfohlen)"), mic[@"name"]] : mic[@"name"];
+        [_calMic addItemWithTitle:title];
+        _calMic.lastItem.representedObject = mic[@"uid"];
+        if ([mic[@"uid"] isEqualToString:chosen]) { [_calMic selectItem:_calMic.lastItem]; found = YES; }
+    }
+    if (!found) [_calMic selectItemAtIndex:0];   // gewähltes Mikrofon gerade nicht angeschlossen: automatisch
+}
+
+- (void)chooseMicrophone:(NSPopUpButton *)sender { _app.calibrationMicUID = sender.selectedItem.representedObject; }
 
 - (void)startCalibration:(id)sender {
     if (_calibrator.running) {

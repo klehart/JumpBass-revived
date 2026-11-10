@@ -24,6 +24,9 @@ That is exactly what JumpBass Revived does.
   <img src="docs/window-sound.png" width="380" alt="Window: sound settings">
   <img src="docs/window-settings.png" width="380" alt="Window: settings">
 </p>
+<p align="center">
+  <img src="docs/window-calibration.png" width="460" alt="Calibration window">
+</p>
 
 <p align="center"><sub>The user interface is available in English and German and follows the system language.</sub></p>
 
@@ -35,7 +38,16 @@ That is exactly what JumpBass Revived does.
 - **Volume** in percent or decibels, automatically follows the Mac's volume and mute – with loudness
   compensation (the bass is lowered less than the speakers, because hearing loses bass at low volume)
 - **External displays:** for monitors without macOS volume control (DisplayPort/HDMI, e.g. LG UltraFine)
-  the bass follows the volume and mute set in [MonitorControl](https://github.com/MonitorControl/MonitorControl) via DDC
+  the bass follows the monitor's own volume and mute. On Apple Silicon JumpBass reads them directly from the
+  monitor via DDC/CI, so it works no matter which app sets the volume (MonitorControl, BetterDisplay, Lunar …)
+  or whether the monitor's buttons are used. On Intel Macs the value is read from
+  [MonitorControl](https://github.com/MonitorControl/MonitorControl)
+- **Per-output values:** volume, crossover and bass timing are remembered separately for every output
+  device (e.g. MacBook speakers vs. display) and restored when you switch
+- **Calibration with a microphone:** measures bass timing (8 runs, outliers discarded), the level at which
+  your BassJump starts to clip (sets the maximum level just below it) and, for displays, how the monitor's
+  volume curve behaves. Results are stored per output with date and shown in the calibration window.
+  The built-in microphone is used by default; any other microphone can be chosen
 - **Presets:** 16 built-in ones plus any number of your own, which store all sound settings
 - **Protection against distortion:** sub-bass filter (high-pass for frequencies the small driver
   cannot reproduce) and a look-ahead limiter whose ceiling is set below the measured clipping point
@@ -46,6 +58,8 @@ That is exactly what JumpBass Revived does.
 - **Selectable outputs:** e.g. only with the MacBook speakers and the external display, not with headphones
 - **Interface:** window with an analog VU meter and an ⓘ explanation for every setting, plus quick
   access from the menu bar (icon derived from the app icon, greyed out when inactive)
+- **Stable signature:** releases are signed with a self-made certificate, so macOS keeps the audio
+  permission across updates
 - **Update notice:** checks GitHub once a day for a new release (can be turned off; nothing is installed automatically)
 - **Languages:** English and German
 - **Universal binary:** Intel and Apple Silicon
@@ -71,8 +85,9 @@ so macOS drives it without any driver. JumpBass Revived
 
 If the app quits or crashes, macOS immediately restores the original output.
 
-The code consists of two Objective-C files: `main.m` (audio, menu bar, settings) and
-`MainWindow.m` (window and VU meter).
+The code consists of four Objective-C files: `main.m` (audio, menu bar, settings), `MainWindow.m`
+(window and VU meter), `Calibration.m` (measurements with the microphone) and `DDC.m` (reading a
+display's volume via DDC/CI).
 
 ## Requirements
 
@@ -82,8 +97,9 @@ The code consists of two Objective-C files: `main.m` (audio, menu bar, settings)
 | **10.13 High Sierra – 14.1** | Requires a virtual loopback device such as the free [BlackHole 2ch](https://github.com/ExistentialAudio/BlackHole). |
 
 Tested with a BassJump 2 on a MacBook Pro (Apple Silicon) running macOS 15 Sequoia, with the MacBook
-speakers and an LG UltraFine display (volume via MonitorControl). The clipping point and the display's
-volume curve were measured acoustically with the MacBook microphone.
+speakers and an LG UltraFine display. The clipping point and the display's volume curve were measured acoustically
+with the MacBook microphone. Reading the volume via DDC follows the VESA MCCS standard and should work
+with any display that has speakers and supports DDC/CI, but has only been tested with the LG UltraFine.
 The BlackHole path for older systems is implemented but has not yet been tested on real hardware.
 
 ## Installation
@@ -92,7 +108,7 @@ The BlackHole path for older systems is implemented but has not yet been tested 
 2. The app is not notarized by Apple. On first launch, right-click the app → **Open**, or on macOS 15+
    go to *System Settings → Privacy & Security → Open Anyway*.
 3. On first launch, macOS asks for the **Screen & System Audio Recording** permission – please allow it.
-   Microphone access is not needed.
+   Microphone access is only requested if you run the calibration.
 4. Plug in the BassJump. It is detected automatically and the JumpBass icon appears in the menu bar.
 5. Enable "Beim Anmelden starten" (launch at login) in the window under *Einstellungen* (settings).
 
@@ -137,6 +153,7 @@ sudo ./alte-software-entfernen.sh
 | BassJump spielt mit bei (play with) | Output devices for which the bass is added. |
 | Nach Updates suchen (check for updates) | Asks GitHub once a day for the latest version number and shows a notice in the window and menu. |
 | Nur als Subwoofer nutzen (subwoofer only) | Switches the default input/output back if macOS selects the BassJump. |
+| Kalibrieren … (calibrate) | Opens the calibration window: choose what to measure (bass timing, maximum level, volume curve) and the microphone. Takes a little over two minutes and briefly gets loud. The volume curve needs the *Accessibility* permission, because it presses the volume keys. |
 
 ## Uninstalling
 
@@ -150,8 +167,13 @@ permissions and moves itself to the Trash. Alternatively: `./deinstallieren.sh`.
 - **Distortion at high volume:** a hardware limit of the small, USB-powered amplifier. The default
   ceiling of -12 dB already stays below it; if it still crackles, lower the maximum level or raise the
   sub-bass filter. If LIMIT is lit all the time, the BassJump volume is set too high.
-- **Bass does not follow an external display's volume:** the display has no macOS volume control. Use
-  MonitorControl to set its volume; JumpBass reads it from there.
+- **Bass does not follow an external display's volume:** the display has no macOS volume control and
+  JumpBass could not read it via DDC (Intel Mac, some docks/adapters, or the built-in HDMI port of some
+  Macs). Use MonitorControl to set its volume; JumpBass then reads it from there.
+- **Faint hiss from the BassJump:** comes from its amplifier and is the same in every state, including
+  standby and with the original software. Only removing power makes it go away.
+- **Calibration aborts:** keep JumpBass switched on with an output where the BassJump plays along, and
+  make sure microphone access is allowed in *Privacy & Security → Microphone*.
 - **Diagnostics:** `JUMPBASS_DEBUG=1 "/Applications/JumpBass Revived.app/Contents/MacOS/JumpBassRevived"`
   prints status, levels and latencies to the terminal.
 

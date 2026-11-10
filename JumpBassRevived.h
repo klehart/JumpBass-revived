@@ -106,6 +106,8 @@ BOOL LooksLikeBassJump(AudioObjectID dev);
 - (unsigned)ioCycles;                   // Zähler der Audio-Durchläufe (läuft die Engine?)
 - (double)outputSampleRate;
 - (AudioObjectID)measurementMicrophone;
+- (NSArray<NSDictionary *> *)microphones;   // uid, name, builtIn – ohne BassJump
+@property (nonatomic, copy) NSString *calibrationMicUID;   // nil = automatisch
 @end
 
 // Lautstärke eines externen Monitors per DDC (nur Apple Silicon), im Hintergrund zweimal pro Sekunde gelesen

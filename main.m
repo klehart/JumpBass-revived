@@ -1473,7 +1473,30 @@ static NSArray<NSString *> *ProfileKeys(void) { return @[@"levelDB", @"crossover
 - (BOOL)testPlaying { return atomic_load(&_engine.testFrames) != 0; }
 - (unsigned)ioCycles { return atomic_load(&_engine.ioCycles); }
 - (double)outputSampleRate { return _sampleRate; }
-- (AudioObjectID)measurementMicrophone { return FallbackMicrophone([self findBassJump]); }
+// Gewähltes Mikrofon, falls angeschlossen, sonst das eingebaute
+- (AudioObjectID)measurementMicrophone {
+    AudioObjectID chosen = self.calibrationMicUID ? DeviceForUID(self.calibrationMicUID) : kAudioObjectUnknown;
+    return chosen ?: FallbackMicrophone([self findBassJump]);
+}
+
+- (NSArray<NSDictionary *> *)microphones {
+    AudioObjectID bassJump = [self findBassJump];
+    NSMutableArray *r = [NSMutableArray array];
+    for (NSNumber *n in InputDevices()) {
+        AudioObjectID dev = n.unsignedIntValue;
+        NSString *uid = DeviceUID(dev);
+        if (!uid || dev == bassJump || LooksLikeBassJump(dev)) continue;
+        BOOL builtIn = DeviceUInt32(dev, kAudioDevicePropertyTransportType, kAudioObjectPropertyScopeGlobal) == kAudioDeviceTransportTypeBuiltIn;
+        [r addObject:@{ @"uid": uid, @"name": DeviceName(dev) ?: uid, @"builtIn": @(builtIn) }];
+    }
+    return r;
+}
+
+- (NSString *)calibrationMicUID { return [self.defaults stringForKey:@"calibrationMicUID"]; }
+- (void)setCalibrationMicUID:(NSString *)uid {
+    if (uid.length) [self.defaults setObject:uid forKey:@"calibrationMicUID"];
+    else [self.defaults removeObjectForKey:@"calibrationMicUID"];
+}
 - (NSString *)currentOutputName { AudioObjectID out = DefaultOutputDevice(); return out ? DeviceName(out) : nil; }
 
 // Monitor ohne macOS-Lautstärke, dessen eigene Lautstärke lesbar ist: 0…1, sonst -1

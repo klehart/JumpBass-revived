@@ -97,7 +97,7 @@
 "Nur bei externen Monitoren mit eigener Lautstärke: Verstellt sie kurz über die Lautstärketasten und misst, wie stark der Monitor lauter wird, damit der Bass genau mitgeht. Dafür muss eine App wie MonitorControl, BetterDisplay oder Lunar die Tasten an den Monitor weitergeben. Braucht die Freigabe „Bedienungshilfen“." = "Only for external displays with their own volume: briefly changes it with the volume keys and measures how much louder the display gets, so the bass follows it exactly. An app like MonitorControl, BetterDisplay or Lunar must pass the keys on to the display. Requires the Accessibility permission.";
 "Kalibrierung starten" = "Start Calibration";
 "Zurücksetzen" = "Reset";
-"Misst mit dem Mikrofon des Macs, wie der BassJump mit „%@“ zusammenspielt, und stellt die Werte passend ein. Dauert etwa eine halbe Minute, kurz wird es laut. Vorher: Raum still, Mac und BassJump wie beim Hören aufstellen, normale Lautstärke." = "Uses the Mac's microphone to measure how the BassJump works with “%@” and adjusts the settings. Takes about 30 seconds and briefly gets loud. Keep the room quiet, place Mac and BassJump as when listening, use normal volume.";
+"Misst mit dem Mikrofon, wie der BassJump mit „%@“ zusammenspielt, und stellt die Werte passend ein. Dauert gut zwei Minuten, kurz wird es laut. Vorher: Raum still, Mac und BassJump wie beim Hören aufstellen, normale Lautstärke." = "Uses a microphone to measure how the BassJump works with “%@” and adjusts the settings. Takes a little over two minutes and briefly gets loud. Keep the room quiet, place Mac and BassJump as when listening, use normal volume.";
 "„%@“ ist noch nicht kalibriert." = "“%@” has not been calibrated yet.";
 "Bass-Timing %+.0f ms (Streuung %.1f ms)" = "Bass timing %+.0f ms (spread %.1f ms)";
 "Maximalpegel %.0f dB (übersteuert ab %.0f dB)" = "Maximum level %.0f dB (clips from %.0f dB)";
@@ -124,9 +124,13 @@
 "Die Lautstärkekurve ließ sich nicht sicher messen. Bitte im Raum still sein und erneut versuchen." = "The volume curve could not be measured reliably. Please keep the room quiet and try again.";
 "Kalibrieren …" = "Calibrate …";
 "Schließen" = "Close";
-"Misst mit dem Mikrofon des Macs Bass-Timing, Maximalpegel und bei Monitoren die Lautstärkekurve und stellt die Werte passend ein." = "Uses the Mac's microphone to measure bass timing, maximum level and, for displays, the volume curve, and sets the values to match.";
+"Misst mit dem Mikrofon Bass-Timing, Maximalpegel und bei Monitoren die Lautstärkekurve und stellt die Werte passend ein." = "Uses a microphone to measure bass timing, maximum level and, for displays, the volume curve, and sets the values to match.";
 "Die Messung wurde unterbrochen (%@)." = "The measurement was interrupted (%@).";
 "Bass-Ausgabe nicht bereit" = "bass output not ready";
 "Testsignal wurde nicht abgespielt" = "test signal was not played";
 "Mikrofon liefert keine Daten mehr" = "microphone stopped delivering data";
 "%g dB (gemessen)" = "%g dB (measured)";
+"Mikrofon:" = "Microphone:";
+"Automatisch (eingebautes bevorzugt)" = "Automatic (built-in preferred)";
+"%@ (empfohlen)" = "%@ (recommended)";
+"Das eingebaute Mikrofon liefert meist die genauesten Ergebnisse. Ein externes Mikrofon an den Hörplatz legen, nicht direkt an den BassJump oder die Lautsprecher." = "The built-in microphone usually gives the most accurate results. Place an external microphone at your listening position, not directly at the BassJump or the speakers.";
