@@ -437,7 +437,8 @@ static double ScalePos(double vu) {
     [_settingsPane addSubview:_updates];
     [self addInfo:L(@"Nach 10 Sekunden Stille gibt JumpBass den BassJump frei und schaltet ihn stumm. Die Lautsprecher spielen dann "
                    "direkt, ohne Umweg über JumpBass, und der Mac rechnet nichts. Der BassJump kann so selbst in seinen Standby gehen.\n\n"
-                   "Am Klang ändert das nichts: Ein Rauschen des BassJump war in der Messung auch ohne Ruhemodus nicht hörbar. "
+                   "Gegen das leise Rauschen des BassJump hilft das nicht: Es kommt von seinem Verstärker und ist laut Messung "
+                   "gleich, ob er spielt, stumm ist oder im Standby – weg ist es nur ohne Strom. "
                    "Sobald wieder Ton kommt, schaltet sich der Bass automatisch zu – die ersten Sekundenbruchteile noch ohne Bass. "
                    "Stört das, den Ruhemodus ausschalten.") after:_idle];
     [self addInfo:L(@"Startet JumpBass automatisch, sobald du dich am Mac anmeldest.") after:_login];

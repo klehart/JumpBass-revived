@@ -133,7 +133,7 @@ sudo ./alte-software-entfernen.sh
 | Bass-Timing | 0 = automatic, based on device latencies. Positive delays the bass, negative delays the speakers. |
 | Tiefbass-Schutz (sub-bass filter) | Removes frequencies below 30–70 Hz that the small driver cannot reproduce. Default 50 Hz: measured, 40 Hz comes out more than 10 dB quieter than 60 Hz but clips just as early. |
 | Maximalpegel (maximum level) | Ceiling of the limiter, default -12 dB. Measured: the BassJump's amplifier clips from about -10 dBFS, so higher levels are not offered. |
-| Ruhemodus (standby) | Releases the BassJump during silence (saves CPU, lets the BassJump enter its own standby; no audible hiss difference was measured). |
+| Ruhemodus (standby) | Releases the BassJump during silence (saves CPU, lets the BassJump enter its own standby; its faint amplifier hiss stays the same in every state while it has power – only unplugging it removes it). |
 | BassJump spielt mit bei (play with) | Output devices for which the bass is added. |
 | Nach Updates suchen (check for updates) | Asks GitHub once a day for the latest version number and shows a notice in the window and menu. |
 | Nur als Subwoofer nutzen (subwoofer only) | Switches the default input/output back if macOS selects the BassJump. |

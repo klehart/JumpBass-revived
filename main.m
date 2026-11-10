@@ -740,8 +740,8 @@ static void SetHardwareSilent(AudioObjectID dev, BOOL silent);
     }
 }
 
-// Ruhemodus: Nach längerer Stille den BassJump freigeben. Hörbares Rauschen hat er im Betrieb nicht (gemessen),
-// es geht um Rechenzeit und darum, dass der BassJump selbst in seinen Standby gehen kann.
+// Ruhemodus: Nach längerer Stille den BassJump freigeben. Es geht um Rechenzeit und darum, dass der BassJump selbst
+// in seinen Standby gehen kann. Sein Rauschen (Verstärker, 1–2 kHz) ist in allen Zuständen gleich, solange er Strom hat (gemessen).
 - (void)checkIdle {
     if (!_tap) return;
     CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
